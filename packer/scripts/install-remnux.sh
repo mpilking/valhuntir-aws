@@ -88,11 +88,15 @@ cast install "remnux@$REMNUX_SALTSTACK_VERSION" --mode "$REMNUX_MODE" --user "$R
 # --- Node.js (NodeSource, exact version) + remnux-mcp server -----------------
 # REMnux may ship its own Node; the MCP server uses this one explicitly.
 NODE_MAJOR="${NODEJS_VERSION%%.*}"
-install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-  | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
-echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" \
-  > /etc/apt/sources.list.d/nodesource.list
+# The REMnux salt-states add NodeSource themselves (their own keyring); a second
+# entry for the same repo with a different Signed-By breaks apt. Reuse theirs.
+if ! grep -rqs "deb.nodesource.com/node_$NODE_MAJOR.x" /etc/apt/sources.list /etc/apt/sources.list.d/; then
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list
+fi
 apt_retry apt-get update
 apt_retry apt-get install -y --allow-downgrades "nodejs=$NODEJS_VERSION-1nodesource1"
 apt-mark hold nodejs

@@ -23,9 +23,12 @@ gh_latest_tag() {  # github.com/<repo>/releases/latest redirects to .../tag/<tag
   echo "${u##*/}"
 }
 gh_head() { git ls-remote "https://github.com/$1.git" HEAD | cut -f1; }
-choco_latest() {   # newest non-prerelease version of a Chocolatey package
-  curl -fsSL "https://community.chocolatey.org/api/v2/FindPackagesById()?id='$1'&\$filter=IsLatestVersion" \
-    | grep -o '<d:Version>[^<]*' | head -1 | cut -d'>' -f2
+python_latest() {  # newest python.org release that ships a Windows amd64 installer
+  local v
+  for v in $(curl -fsSL https://www.python.org/ftp/python/ | grep -oE 'href="3\.[0-9]+\.[0-9]+/"' \
+               | grep -oE '3\.[0-9]+\.[0-9]+' | sort -Vr | head -15); do
+    curl -fsI -o /dev/null "https://www.python.org/ftp/python/$v/python-$v-amd64.exe" && { echo "$v"; return; }
+  done
 }
 docker_latest() {  # newest docker-ce in Docker's noble repo, e.g. 29.9.1
   curl -fsSL https://download.docker.com/linux/ubuntu/dists/noble/stable/binary-amd64/Packages \
@@ -55,7 +58,7 @@ jq -n \
   --arg nodejs "$(curl -fsSL https://nodejs.org/dist/index.json | jq -r '[.[] | select(.lts)][0].version | ltrimstr("v")')" \
   --arg docker "$(docker_latest)" \
   --arg wintools "$(gh_head AppliedIR/wintools-mcp)" \
-  --arg git "$(choco_latest git)" --arg python312 "$(choco_latest python312)" \
+  --arg git "$(gh_latest_tag git-for-windows/git)" --arg python "$(python_latest)" \
 '{
   name: $name, status: "candidate",
   description: ("Newest upstream versions as of " + $now + "."),
@@ -66,7 +69,7 @@ jq -n \
     sift_saltstack: $sift_saltstack, sift_mcp: $sift_mcp, valhuntir: $valhuntir,
     opensearch_mcp: $opensearch_mcp, pypi_exclude_newer: $now,
     remnux_saltstack: $remnux_saltstack, remnux_mcp_server: $remnux_mcp, nodejs: $nodejs,
-    docker: $docker, wintools_mcp: $wintools, choco_git: $git, choco_python312: $python312
+    docker: $docker, wintools_mcp: $wintools, git_windows: $git, python_windows: $python
   },
   amis: {sift: "", remnux: "", opensearch: "", windows: ""},
   notes: []

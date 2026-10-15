@@ -1,4 +1,4 @@
-# Windows wintools-mcp host AMI: pinned Git/Python, wintools-mcp source,
+# Windows wintools-mcp host AMI: pinned Git/Python (official installers), wintools-mcp source,
 # forensic-knowledge and Python environment staged; generalised with sysprep.
 # setup-windows.ps1 itself (token, TLS cert, join, scheduled task) runs at first
 # boot. Variables: variables.pkr.hcl. Run via checkpoints/bake.sh.
@@ -38,8 +38,8 @@ source "amazon-ebs" "windows" {
     Component        = "windows"
     BaseAMI          = var.windows_base_ami
     WintoolsMcp      = var.wintools_mcp
-    ChocoGit         = var.choco_git
-    ChocoPython312   = var.choco_python312
+    GitWindows       = var.git_windows
+    PythonWindows    = var.python_windows
     PypiExcludeNewer = var.pypi_exclude_newer
   })
   snapshot_tags = merge(local.common_tags, { Component = "windows" })
@@ -54,8 +54,8 @@ build {
     environment_vars = [
       "WINTOOLS_MCP_REF=${var.wintools_mcp}",
       "SIFT_MCP_REF=${var.sift_mcp}",
-      "CHOCO_GIT=${var.choco_git}",
-      "CHOCO_PYTHON312=${var.choco_python312}",
+      "GIT_WINDOWS=${var.git_windows}",
+      "PYTHON_WINDOWS=${var.python_windows}",
       "PYPI_EXCLUDE_NEWER=${var.pypi_exclude_newer}",
     ]
     script = "${path.root}/scripts/install-windows.ps1"

@@ -52,8 +52,8 @@ variable "remnux_mcp_server" { type = string }
 variable "nodejs" { type = string }
 variable "docker" { type = string }
 variable "wintools_mcp" { type = string }
-variable "choco_git" { type = string }
-variable "choco_python312" { type = string }
+variable "git_windows" { type = string }
+variable "python_windows" { type = string }
 
 locals {
   stamp = formatdate("YYYYMMDD-hhmmss", timestamp())

@@ -27,7 +27,7 @@ locals {
     "ubuntu_ami", "windows_base_ami", "awscli", "cast",
     "sift_saltstack", "sift_mcp", "valhuntir", "opensearch_mcp", "pypi_exclude_newer",
     "remnux_saltstack", "remnux_mcp_server", "nodejs", "docker",
-    "wintools_mcp", "choco_git", "choco_python312",
+    "wintools_mcp", "git_windows", "python_windows",
   ]
   pins = { for k in local.pin_keys : k => (
     local.is_latest ? "latest" : try(tostring(local.checkpoint_raw.pins[k]), "")

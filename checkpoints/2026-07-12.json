@@ -1,7 +1,7 @@
 {
   "name": "2026-07-12",
   "status": "candidate",
-  "description": "Every component at the version current on 2026-07-12 19:00 UTC — the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
+  "description": "Every component at the version current on 2026-07-12 19:00 UTC \u2014 the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
   "region": "us-east-1",
   "validated_on": "",
   "iac_commit": "",
@@ -26,13 +26,13 @@
     "nodejs": "22.23.1",
     "docker": "29.6.1",
     "wintools_mcp": "b58a60161f30188fe295f23f3655c503ae5c0a4d",
-    "choco_git": "2.55.0.2",
-    "choco_python312": "3.12.10"
+    "git_windows": "2.55.0.windows.2",
+    "python_windows": "3.12.10"
   },
   "amis": {
-    "sift": "",
+    "sift": "ami-0e21d4f2479b872cb",
     "remnux": "",
-    "opensearch": "",
+    "opensearch": "ami-0153f27e4ac4bc109",
     "windows": ""
   },
   "notes": [

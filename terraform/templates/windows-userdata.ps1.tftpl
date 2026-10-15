@@ -28,11 +28,24 @@ function Update-Path {
 
 try {
 %{ if !baked ~}
-  # --- 0. checkpoint=latest: newest Git/Python; setup-windows.ps1 clones main --
+  # --- 0. checkpoint=latest: newest Git for Windows + Python (official
+  # installers); setup-windows.ps1 then clones wintools-mcp main itself ---------
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-  Invoke-Expression ((New-Object Net.WebClient).DownloadString("https://community.chocolatey.org/install.ps1"))
-  Update-Path
-  choco install -y --no-progress git python312
+  function Install-Exe { param([string]$Url, [string[]]$InstallArgs)
+    $exe = Join-Path $env:TEMP (Split-Path $Url -Leaf)
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $exe
+    $p = Start-Process -FilePath $exe -ArgumentList $InstallArgs -Wait -PassThru
+    if ($p.ExitCode -ne 0) { throw "$Url installer exited $($p.ExitCode)" } }
+  $rel = Invoke-RestMethod https://api.github.com/repos/git-for-windows/git/releases/latest
+  $gitUrl = ($rel.assets | Where-Object { $_.name -match '^Git-[\d.]+-64-bit\.exe$' } | Select-Object -First 1).browser_download_url
+  Install-Exe $gitUrl @("/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-", "/SUPPRESSMSGBOXES")
+  $vers = (Invoke-WebRequest -UseBasicParsing https://www.python.org/ftp/python/).Links.href |
+    Where-Object { $_ -match '^3\.\d+\.\d+/$' } | ForEach-Object { [version]$_.TrimEnd("/") } | Sort-Object -Descending
+  foreach ($v in $vers) {
+    $u = "https://www.python.org/ftp/python/$v/python-$v-amd64.exe"
+    try { Invoke-WebRequest -UseBasicParsing -Method Head $u | Out-Null; $pyUrl = $u; break } catch { }
+  }
+  Install-Exe $pyUrl @("/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0")
   Update-Path
   New-Item -ItemType Directory -Force -Path $Install | Out-Null
   if (-not (Test-Path $Wintools)) { git clone --quiet https://github.com/AppliedIR/wintools-mcp.git $Wintools }

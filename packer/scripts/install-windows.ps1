@@ -2,7 +2,8 @@
 #
 # Run by Packer only. It stages, at pinned versions, everything upstream's
 # setup-windows.ps1 would otherwise fetch as "latest" at first boot:
-#   - Git + Python via Chocolatey (exact versions)
+#   - Git for Windows + Python from their official installers (exact versions;
+#     not Chocolatey, whose community feed rate-limits cloud IP ranges)
 #   - wintools-mcp checked out *detached* at the pinned commit in
 #     C:\Tools\vhir\wintools-mcp (setup-windows.ps1's `git pull` then fails and
 #     it explicitly continues with the existing code)
@@ -14,11 +15,13 @@
 # token + TLS cert and joins SIFT, which happens at first boot (user data).
 #
 # Versions via environment — REQUIRED:
-#   WINTOOLS_MCP_REF, SIFT_MCP_REF, CHOCO_GIT, CHOCO_PYTHON312, PYPI_EXCLUDE_NEWER
+#   WINTOOLS_MCP_REF, SIFT_MCP_REF, PYPI_EXCLUDE_NEWER,
+#   GIT_WINDOWS (Git for Windows release tag, e.g. 2.55.0.windows.2),
+#   PYTHON_WINDOWS (python.org version, e.g. 3.12.10)
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-foreach ($v in "WINTOOLS_MCP_REF","SIFT_MCP_REF","CHOCO_GIT","CHOCO_PYTHON312","PYPI_EXCLUDE_NEWER") {
+foreach ($v in "WINTOOLS_MCP_REF","SIFT_MCP_REF","GIT_WINDOWS","PYTHON_WINDOWS","PYPI_EXCLUDE_NEWER") {
   if (-not [Environment]::GetEnvironmentVariable($v)) { throw "missing required env var $v" }
 }
 $Install  = "C:\Tools\vhir"
@@ -34,16 +37,26 @@ function Invoke-Native { param([scriptblock]$Cmd)
 function Update-Path {
   $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") }
 
-# --- Chocolatey + exact Git / Python ------------------------------------------
+# --- Exact Git / Python from the official installers ----------------------------
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-  Invoke-Expression ((New-Object Net.WebClient).DownloadString("https://community.chocolatey.org/install.ps1"))
-  Update-Path
-}
-Invoke-Native { choco install -y --no-progress git --version $env:CHOCO_GIT }
-Invoke-Native { choco install -y --no-progress python312 --version $env:CHOCO_PYTHON312 }
+function Install-Exe { param([string]$Url, [string[]]$InstallArgs)
+  $exe = Join-Path $env:TEMP (Split-Path $Url -Leaf)
+  Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $exe
+  $p = Start-Process -FilePath $exe -ArgumentList $InstallArgs -Wait -PassThru
+  if ($p.ExitCode -ne 0) { throw "$Url installer exited $($p.ExitCode)" }
+  Remove-Item $exe -Force }
+# Git for Windows tag X.Y.Z.windows.N -> asset Git-X.Y.Z-64-bit.exe (N=1) or Git-X.Y.Z.N-64-bit.exe
+$t = $env:GIT_WINDOWS.TrimStart("v")
+if ($t -notmatch '^(\d+\.\d+\.\d+)\.windows\.(\d+)$') { throw "unexpected GIT_WINDOWS: $t" }
+$gitExe = if ($Matches[2] -eq "1") { "Git-$($Matches[1])-64-bit.exe" } else { "Git-$($Matches[1]).$($Matches[2])-64-bit.exe" }
+Install-Exe "https://github.com/git-for-windows/git/releases/download/v$t/$gitExe" `
+  @("/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-", "/SUPPRESSMSGBOXES")
+$pv = $env:PYTHON_WINDOWS
+Install-Exe "https://www.python.org/ftp/python/$pv/python-$pv-amd64.exe" `
+  @("/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0")
 Update-Path
-$Py = (Get-Command python -ErrorAction Stop).Source
+$mm = ($pv -split "\.")[0..1] -join ""
+$Py = "C:\Program Files\Python$mm\python.exe"
 Invoke-Native { & $Py --version }
 
 # --- Pinned source ------------------------------------------------------------
