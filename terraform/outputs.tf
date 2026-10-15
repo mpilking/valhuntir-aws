@@ -50,7 +50,7 @@ output "ssh_tunnel_cmd" {
 output "usage_hint" {
   value = <<-EOT
     1. Open the tunnel:   terraform output -raw ssh_tunnel_cmd | bash
-    2. XRDP into SIFT:    connect an RDP client to localhost:3389 (user = ${var.sift_user})
+    2. XRDP into SIFT:    connect an RDP client to localhost:3389 (user = ${local.sift_user})
     3. Examiner Portal:   https://localhost:4508/portal/  (TLS: per-instance CA at ~/.vhir/tls/ca-cert.pem on SIFT)
     4. Get credentials:   see 'get_credentials_cmd' output
     5. Load evidence:     upload to s3://${aws_s3_bucket.evidence.bucket}/incoming/<case>/,

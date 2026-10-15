@@ -45,3 +45,23 @@ resource "aws_secretsmanager_secret_version" "harness" {
     remnux_mcp_token  = random_password.remnux_mcp_token.result
   })
 }
+
+# Windows <-> SIFT join hand-off. SIFT's first boot asks its gateway for a
+# one-time join code (upstream `vhir setup join-code` flow) and writes it here;
+# Windows' first boot waits for it, then runs setup-windows.ps1 -JoinCode, which
+# registers wintools-mcp with the gateway. Codes expire (48 h) and are single-use.
+locals {
+  join_code_param = "/${var.name_prefix}/windows-join-code"
+}
+
+resource "aws_ssm_parameter" "join_code" {
+  count  = var.enable_windows ? 1 : 0
+  name   = local.join_code_param
+  type   = "SecureString"
+  key_id = aws_kms_key.main.arn
+  value  = "pending"
+
+  lifecycle {
+    ignore_changes = [value] # written by SIFT at first boot
+  }
+}

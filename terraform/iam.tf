@@ -78,6 +78,39 @@ resource "aws_iam_role_policy" "base" {
   policy   = data.aws_iam_policy_document.base.json
 }
 
+# Join-code hand-off: SIFT writes, Windows reads (see secrets.tf).
+data "aws_iam_policy_document" "join_code_write" {
+  statement {
+    actions   = ["ssm:PutParameter", "ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${local.join_code_param}"]
+  }
+  statement {
+    actions   = ["kms:Encrypt", "kms:GenerateDataKey"]
+    resources = [aws_kms_key.main.arn]
+  }
+}
+
+data "aws_iam_policy_document" "join_code_read" {
+  statement {
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${local.join_code_param}"]
+  }
+}
+
+resource "aws_iam_role_policy" "sift_join_code" {
+  count  = var.enable_windows ? 1 : 0
+  name   = "join-code"
+  role   = aws_iam_role.host["sift"].id
+  policy = data.aws_iam_policy_document.join_code_write.json
+}
+
+resource "aws_iam_role_policy" "windows_join_code" {
+  count  = var.enable_windows ? 1 : 0
+  name   = "join-code"
+  role   = aws_iam_role.host["windows"].id
+  policy = data.aws_iam_policy_document.join_code_read.json
+}
+
 resource "aws_iam_role_policy" "sift_evidence" {
   name   = "evidence"
   role   = aws_iam_role.host["sift"].id

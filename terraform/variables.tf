@@ -26,7 +26,7 @@ variable "examiner_name" {
 }
 
 variable "sift_user" {
-  description = "OS login account on the SIFT host. SANS convention is 'sansforensics'; the SIFT salt-states default to this pillar value."
+  description = "(latest only) OS login account on the SIFT host. SANS convention is 'sansforensics'; the SIFT salt-states default to this pillar value."
   type        = string
   default     = "sansforensics"
 }
@@ -98,67 +98,28 @@ variable "enable_remnux" {
 }
 
 ###############################################################################
-# SIFT / REMnux provisioning via cast (github.com/ekristen/cast)
+# Software checkpoint — see checkpoint.tf and ../checkpoints/README.md
 ###############################################################################
 
-variable "cast_version" {
-  description = "cast release tag used to install SIFT/REMnux salt-states. See github.com/ekristen/cast/releases."
+variable "checkpoint" {
+  description = <<-EOT
+    Which software to deploy. Required — there is no default, so a deploy never
+    silently changes versions.
+      "<name>"  launch the baked, tested AMIs in ../checkpoints/<name>.json
+      "latest"  build every host from base with the newest upstream versions
+                (slow, may fail; used to try upgrades before cutting a checkpoint)
+  EOT
   type        = string
-  default     = "v1.0.22"
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+$", var.checkpoint))
+    error_message = "checkpoint must be a checkpoint file name (e.g. 2026-07-12) or \"latest\"."
+  }
 }
 
 ###############################################################################
-# Version pins — defaults are the versions validated end-to-end on 2026-07-12.
-# Bumping any of these is a deliberate upgrade that needs its own test pass.
+# Install choices for checkpoint="latest" only. A checkpoint records the values
+# its AMIs were baked with, and those take precedence.
 ###############################################################################
-
-variable "sift_saltstack_version" {
-  description = "teamdfir/sift-saltstack release installed by `cast install sift@<tag>`."
-  type        = string
-  default     = "v2026.04.21"
-}
-
-variable "sift_mcp_ref" {
-  description = "AppliedIR/sift-mcp commit installed on SIFT."
-  type        = string
-  default     = "c67a860ea70c38dc3c5243193a76f0bcbd6db18f"
-}
-
-variable "valhuntir_ref" {
-  description = "AppliedIR/Valhuntir (vhir CLI) commit installed on SIFT."
-  type        = string
-  default     = "ce1ae368f425402545414eea50998608f4b887d7"
-}
-
-variable "awscli_version" {
-  description = "AWS CLI v2 bundle version installed on SIFT."
-  type        = string
-  default     = "2.35.21"
-}
-
-variable "pypi_exclude_newer" {
-  description = "Resolve every Python dependency setup-sift.sh installs as of this UTC timestamp (uv --exclude-newer). Required: sift-mcp's deps are open-ended and mcp 2.x breaks the pinned code."
-  type        = string
-  default     = "2026-07-12T19:00:00Z"
-}
-
-variable "ubuntu_ami_id" {
-  description = "Pin the Ubuntu 24.04 base AMI for all Ubuntu hosts (us-east-1). Empty = newest Canonical noble AMI (floats)."
-  type        = string
-  default     = "ami-0a02a779008fa3b99" # ubuntu-noble-24.04-amd64-server-20260626 (validated 2026-07-12)
-}
-
-variable "sift_ami" {
-  description = "Pre-baked SIFT AMI (from packer/sift.pkr.hcl). Empty = build from the Ubuntu 24.04 base at first boot (slow)."
-  type        = string
-  default     = ""
-}
-
-variable "remnux_ami" {
-  description = "Pre-baked REMnux AMI (from packer/remnux.pkr.hcl). Empty = build from the Ubuntu 24.04 base at first boot (slow)."
-  type        = string
-  default     = ""
-}
 
 variable "sift_mode" {
   description = <<-EOT

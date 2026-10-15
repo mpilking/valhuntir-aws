@@ -8,22 +8,23 @@
 # salt run, and the Valhuntir sift-mcp stack. It sets NO secrets and NO
 # per-case identity; those are applied at first boot by valhuntir-firstboot.sh.
 #
-# Parameters via environment (with defaults):
+# Parameters via environment:
 #   SIFT_USER  OS login account          (default: sansforensics)
-#   CAST_VER   cast release tag          (default: v1.0.22)
 #   SIFT_MODE  cast SIFT mode            (default: desktop)
 #
-# Version pins (defaults = the versions validated on 2026-07-12). Every input
-# that would otherwise float to "latest" is pinned so a from-base boot and a
-# Packer bake install exactly the same, already-tested software:
-#   SIFT_SALTSTACK_VERSION  teamdfir/sift-saltstack release   (v2026.04.21)
-#   SIFT_MCP_REF            AppliedIR/sift-mcp commit          (c67a860...)
-#   VALHUNTIR_REF           AppliedIR/Valhuntir commit         (ce1ae36...)
-#   AWSCLI_VERSION          AWS CLI v2 bundle version          (2.35.21)
-#   PYPI_EXCLUDE_NEWER      resolve ALL Python deps as of this time (2026-07-12T19:00:00Z)
-# PYPI_EXCLUDE_NEWER is required, not optional: sift-mcp declares open-ended deps
-# (e.g. mcp>=1.26) and mcp 2.x — released after July — breaks the July code. It is
-# passed to setup-sift.sh as UV_EXCLUDE_NEWER; every package it installs goes via uv.
+# Versions — REQUIRED, no defaults. Callers pass a checkpoint's pins (Packer via
+# checkpoints/bake.sh) or the literal "latest" (Terraform checkpoint=latest):
+#   CAST_VER                ekristen/cast release tag
+#   SIFT_SALTSTACK_VERSION  teamdfir/sift-saltstack release
+#   SIFT_MCP_REF            AppliedIR/sift-mcp commit
+#   VALHUNTIR_REF           AppliedIR/Valhuntir commit
+#   OPENSEARCH_MCP_REF      AppliedIR/opensearch-mcp commit (client for the remote OpenSearch host)
+#   AWSCLI_VERSION          AWS CLI v2 bundle version
+#   PYPI_EXCLUDE_NEWER      resolve ALL Python deps as of this UTC time
+# PYPI_EXCLUDE_NEWER matters as much as the commits: sift-mcp declares open-ended
+# deps (e.g. mcp>=1.26), and mcp 2.x broke the July code. It is passed to
+# setup-sift.sh as UV_EXCLUDE_NEWER; every package it installs goes via uv.
+# The versions actually installed are written to /etc/valhuntir/versions/sift.
 # Note: the SIFT salt-states install their own AWS CLI (2.15.24) and make it the
 # active one, so AWSCLI_VERSION only governs the CLI used before cast runs.
 # Not pinned: Ubuntu apt packages, the uv binary itself, and the third-party
@@ -32,13 +33,9 @@
 set -euxo pipefail
 
 SIFT_USER="${SIFT_USER:-sansforensics}"
-CAST_VER="${CAST_VER:-v1.0.22}"
 SIFT_MODE="${SIFT_MODE:-desktop}"
-SIFT_SALTSTACK_VERSION="${SIFT_SALTSTACK_VERSION:-v2026.04.21}"
-SIFT_MCP_REF="${SIFT_MCP_REF:-c67a860ea70c38dc3c5243193a76f0bcbd6db18f}"
-VALHUNTIR_REF="${VALHUNTIR_REF:-ce1ae368f425402545414eea50998608f4b887d7}"
-AWSCLI_VERSION="${AWSCLI_VERSION:-2.35.21}"
-PYPI_EXCLUDE_NEWER="${PYPI_EXCLUDE_NEWER:-2026-07-12T19:00:00Z}"
+: "${CAST_VER:?}" "${SIFT_SALTSTACK_VERSION:?}" "${SIFT_MCP_REF:?}" "${VALHUNTIR_REF:?}"
+: "${AWSCLI_VERSION:?}" "${PYPI_EXCLUDE_NEWER:?}" "${OPENSEARCH_MCP_REF:?}"
 
 # cloud-init runs runcmd as root with no HOME set; cast needs it for its cache
 # directory. Ensure HOME is defined for root-context commands (cast, etc.).
@@ -70,10 +67,25 @@ apt_retry apt-get update
 apt_retry apt-get install -y git jq curl unzip python3-venv python3-pip \
   xfce4 xfce4-goodies xrdp libimage-exiftool-perl
 
+# "latest" -> the concrete newest version, resolved once up front so the rest of
+# the install is identical to a pinned one (and the record below is exact).
+gh_latest_tag() {  # <owner/repo>: github.com/<repo>/releases/latest redirects to .../tag/<tag>
+  local u; u=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$1/releases/latest")
+  echo "${u##*/}"
+}
+gh_head() { git ls-remote "https://github.com/$1.git" HEAD | cut -f1; }
+[ "$CAST_VER" = latest ]               && CAST_VER=$(gh_latest_tag ekristen/cast)
+[ "$SIFT_SALTSTACK_VERSION" = latest ] && SIFT_SALTSTACK_VERSION=$(gh_latest_tag teamdfir/sift-saltstack)
+[ "$SIFT_MCP_REF" = latest ]           && SIFT_MCP_REF=$(gh_head AppliedIR/sift-mcp)
+[ "$VALHUNTIR_REF" = latest ]          && VALHUNTIR_REF=$(gh_head AppliedIR/Valhuntir)
+[ "$OPENSEARCH_MCP_REF" = latest ]     && OPENSEARCH_MCP_REF=$(gh_head AppliedIR/opensearch-mcp)
+[ "$PYPI_EXCLUDE_NEWER" = latest ]     && PYPI_EXCLUDE_NEWER=$(date -u +%FT%TZ)
+
 # AWS CLI v2 (needed by firstboot for Secrets Manager + pull-evidence).
 install_awscli_v2() {
   command -v aws >/dev/null 2>&1 && return 0
-  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-$AWSCLI_VERSION.zip" -o /tmp/awscliv2.zip
+  local v="-$AWSCLI_VERSION"; [ "$AWSCLI_VERSION" = latest ] && v=""
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64$v.zip" -o /tmp/awscliv2.zip
   unzip -q -o /tmp/awscliv2.zip -d /tmp
   /tmp/aws/install --update
   rm -rf /tmp/aws /tmp/awscliv2.zip
@@ -163,5 +175,32 @@ for pair in "sift-mcp:$SIFT_MCP_REF" "vhir:$VALHUNTIR_REF"; do
   fi
   echo "pinned OK: ${pair%%:*} @ $have"
 done
+
+# --- opensearch-mcp (client only) ------------------------------------------------
+# OpenSearch runs on its own host, so we do NOT use setup-sift's --opensearch (it
+# would also start a local OpenSearch container via setup-opensearch.sh). Install
+# just the MCP package into the shared venv, the way setup-sift.sh does; first
+# boot writes ~/.vhir/opensearch.yaml and the gateway backend when the host exists.
+clone_pinned https://github.com/AppliedIR/opensearch-mcp.git "$SRC_DIR/opensearch-mcp" "$OPENSEARCH_MCP_REF"
+sudo -u "$SIFT_USER" HOME="$HOME_DIR" UV_EXCLUDE_NEWER="$PYPI_EXCLUDE_NEWER" \
+  "$HOME_DIR/.local/bin/uv" pip install --python "$HOME_DIR/.vhir/venv/bin/python" --quiet \
+  -e "$SRC_DIR/opensearch-mcp" < /dev/null
+sudo -u "$SIFT_USER" "$HOME_DIR/.vhir/venv/bin/python" -c 'import opensearch_mcp'
+
+# Record what was installed (every "latest" already resolved above), so a
+# working checkpoint=latest build can be turned into a checkpoint.
+mkdir -p /etc/valhuntir/versions
+{
+  echo "cast=$CAST_VER"
+  echo "sift_saltstack=$SIFT_SALTSTACK_VERSION"
+  echo "sift_mcp=$SIFT_MCP_REF"
+  echo "valhuntir=$VALHUNTIR_REF"
+  echo "opensearch_mcp=$OPENSEARCH_MCP_REF"
+  echo "pypi_exclude_newer=$PYPI_EXCLUDE_NEWER"
+  echo "mcp=$("$HOME_DIR/.vhir/venv/bin/python" -c 'import importlib.metadata as m; print(m.version("mcp"))' 2>/dev/null || echo '?')"
+  echo "awscli_bootstrap=$AWSCLI_VERSION"
+  echo "installed_at=$(date -u +%FT%TZ)"
+} > /etc/valhuntir/versions/sift
+cat /etc/valhuntir/versions/sift
 
 echo "install-sift.sh complete"

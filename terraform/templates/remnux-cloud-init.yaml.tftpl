@@ -2,9 +2,9 @@
 # REMnux worker first-boot configuration.
 #
 # The heavy install (cast REMnux salt run + Node remnux-mcp) lives in
-# install-remnux.sh, embedded below. When 'baked' is false it runs here at first
-# boot; when true the AMI already contains it (built by Packer from the same
-# script) and this document only writes the token env + enables the service.
+# install-remnux.sh, embedded below. Checkpoint deploys launch an AMI Packer
+# baked from the same script, so this document only writes the token env and
+# enables the service; checkpoint=latest runs the install here first.
 
 write_files:
   # systemd unit for the remnux-mcp HTTP server. The bootstrap creates
@@ -29,6 +29,7 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
+%{ if !baked ~}
   # The heavy install script (single-sourced with Packer). Only executed here
   # when not baked.
   - path: /usr/local/sbin/install-remnux.sh
@@ -36,6 +37,7 @@ write_files:
     owner: root:root
     encoding: gz+b64
     content: ${install_script_b64}
+%{ endif ~}
 
   - path: /usr/local/sbin/remnux-firstboot.sh
     permissions: "0750"
@@ -50,8 +52,10 @@ write_files:
       REMNUX_USER="${remnux_user}"
 
       %{ if !baked ~}
-      # --- 1. Heavy install (not baked) — cast REMnux + remnux-mcp ----------
-      REMNUX_USER="$REMNUX_USER" CAST_VER="${cast_version}" REMNUX_MODE="${remnux_mode}" \
+      # --- 1. Heavy install (checkpoint=latest) — cast REMnux + remnux-mcp --
+      REMNUX_USER="$REMNUX_USER" REMNUX_MODE="${remnux_mode}" CAST_VER="${pins.cast}" \
+        REMNUX_SALTSTACK_VERSION="${pins.remnux_saltstack}" NODEJS_VERSION="${pins.nodejs}" \
+        REMNUX_MCP_VERSION="${pins.remnux_mcp_server}" AWSCLI_VERSION="${pins.awscli}" \
         /usr/local/sbin/install-remnux.sh
       %{ endif ~}
 
@@ -59,12 +63,21 @@ write_files:
       SECRET=$(aws --region "$REGION" secretsmanager get-secret-value \
         --secret-id "$SECRET_ARN" --query SecretString --output text)
       MCP_TOKEN=$(echo "$SECRET" | jq -r .remnux_mcp_token)
+      # Fail closed: without a token the server would need --insecure-no-auth.
+      [ "$${#MCP_TOKEN}" -ge 32 ] || { echo "ERROR: remnux_mcp_token missing" >&2; exit 1; }
       install -m 0640 -o root -g "$REMNUX_USER" /dev/null /etc/remnux-mcp.env
       echo "MCP_TOKEN=$MCP_TOKEN" > /etc/remnux-mcp.env
 
       # --- 3. Enable the service --------------------------------------------
       systemctl daemon-reload
       systemctl enable --now remnux-mcp.service
+
+      # --- 4. Health: /mcp must answer, and refuse a request without the token
+      for i in $(seq 1 30); do
+        code=$(curl -s -o /dev/null -w '%%{http_code}' -m 5 -X POST http://127.0.0.1:3000/mcp || true)
+        [ "$code" = 401 ] && break; sleep 2
+      done
+      [ "$code" = 401 ] || { echo "ERROR: remnux-mcp not healthy (HTTP $code)" >&2; exit 1; }
 
       echo "remnux-firstboot complete"
 

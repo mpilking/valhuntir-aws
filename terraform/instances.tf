@@ -1,43 +1,46 @@
 locals {
+  # Fixed private IPs. Hosts need each other's addresses in their first-boot
+  # config (SIFT's Samba share admits only the Windows IP; Windows joins SIFT),
+  # and fixed IPs avoid a Terraform dependency cycle between them.
+  ip = {
+    sift       = cidrhost(var.private_subnet_cidr, 10)
+    opensearch = cidrhost(var.private_subnet_cidr, 11)
+    remnux     = cidrhost(var.private_subnet_cidr, 12)
+    windows    = cidrhost(var.private_subnet_cidr, 13)
+  }
+
   sift_user_data = templatefile("${path.module}/templates/sift-cloud-init.yaml.tftpl", {
     region             = var.region
     secret_arn         = aws_secretsmanager_secret.harness.arn
     examiner_name      = var.examiner_name
-    sift_user          = var.sift_user
+    sift_user          = local.sift_user
     evidence_bucket    = aws_s3_bucket.evidence.bucket
-    opensearch_url     = local.opensearch_url
+    opensearch_url     = var.enable_opensearch ? "https://${local.ip.opensearch}:9200" : ""
+    remnux_url         = var.enable_remnux ? "http://${local.ip.remnux}:3000/mcp" : ""
+    windows_ip         = var.enable_windows ? local.ip.windows : ""
+    join_code_param    = local.join_code_param
+    kms_key_arn        = aws_kms_key.main.arn
     cases_device       = "/dev/xvdf"
-    cast_version       = var.cast_version
-    sift_mode          = var.sift_mode
-    sift_saltstack_ver = var.sift_saltstack_version
-    sift_mcp_ref       = var.sift_mcp_ref
-    valhuntir_ref      = var.valhuntir_ref
-    awscli_version     = var.awscli_version
-    pypi_exclude_newer = var.pypi_exclude_newer
-    baked              = local.sift_baked
+    sift_mode          = local.sift_mode
+    pins               = local.pins
+    baked              = local.baked
     install_script_b64 = local.sift_install_b64
   })
 
   key_name = var.ssh_public_key != "" ? aws_key_pair.main[0].key_name : null
 
-  opensearch_url = var.enable_opensearch ? "https://${aws_instance.opensearch[0].private_ip}:9200" : ""
-
-  # Baked-AMI selection. When an AMI override is set we launch it and skip the
-  # heavy install at boot (baked=true); otherwise we launch the Ubuntu base and
-  # run the shared install script at first boot (baked=false).
-  # Ubuntu base for every Ubuntu host: the pinned AMI if set, else newest noble.
-  ubuntu_ami = var.ubuntu_ami_id != "" ? var.ubuntu_ami_id : data.aws_ami.ubuntu.id
-
-  sift_ami     = var.sift_ami != "" ? var.sift_ami : local.ubuntu_ami
-  sift_baked   = var.sift_ami != ""
-  remnux_ami   = var.remnux_ami != "" ? var.remnux_ami : local.ubuntu_ami
-  remnux_baked = var.remnux_ami != ""
+  # Checkpoint deploys launch the baked AMI for each host; checkpoint="latest"
+  # launches the base image and runs the shared install script at first boot.
+  sift_ami       = local.baked ? local.amis.sift : local.ubuntu_ami
+  remnux_ami     = local.baked ? local.amis.remnux : local.ubuntu_ami
+  opensearch_ami = local.baked ? local.amis.opensearch : local.ubuntu_ami
+  windows_ami    = local.baked ? local.amis.windows : try(data.aws_ssm_parameter.windows2022[0].value, "")
 
   # Install scripts single-sourced from packer/scripts, embedded into cloud-init
-  # (gzip+base64; EC2 caps user_data at 16 KB) so the from-base path runs the
-  # exact same logic Packer bakes.
-  sift_install_b64   = base64gzip(file("${path.module}/../packer/scripts/install-sift.sh"))
-  remnux_install_b64 = base64gzip(file("${path.module}/../packer/scripts/install-remnux.sh"))
+  # for checkpoint=latest, so the from-base path runs the exact logic Packer bakes.
+  sift_install_b64       = base64gzip(file("${path.module}/../packer/scripts/install-sift.sh"))
+  remnux_install_b64     = base64gzip(file("${path.module}/../packer/scripts/install-remnux.sh"))
+  opensearch_install_b64 = base64gzip(file("${path.module}/../packer/scripts/install-opensearch.sh"))
 }
 
 ###############################################################################
@@ -69,7 +72,7 @@ resource "aws_instance" "bastion" {
     package_update: true
     packages: [unzip, curl]
     runcmd:
-      - [ bash, -c, "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip && unzip -q -o /tmp/awscliv2.zip -d /tmp && /tmp/aws/install" ]
+      - [ bash, -c, "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64${local.pins.awscli == "latest" ? "" : "-${local.pins.awscli}"}.zip -o /tmp/awscliv2.zip && unzip -q -o /tmp/awscliv2.zip -d /tmp && /tmp/aws/install" ]
   EOT
 
   # Don't boot until egress (IGW route) is wired, or early cloud-init has no net.
@@ -90,9 +93,10 @@ resource "aws_eip" "bastion" {
 
 resource "aws_instance" "opensearch" {
   count                  = var.enable_opensearch ? 1 : 0
-  ami                    = local.ubuntu_ami
+  ami                    = local.opensearch_ami
   instance_type          = var.opensearch_instance_type
   subnet_id              = aws_subnet.private.id
+  private_ip             = local.ip.opensearch
   vpc_security_group_ids = [aws_security_group.opensearch[0].id]
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["opensearch"].name
@@ -108,13 +112,22 @@ resource "aws_instance" "opensearch" {
     kms_key_id  = aws_kms_key.main.arn
   }
 
-  user_data = templatefile("${path.module}/templates/opensearch-cloud-init.yaml.tftpl", {
-    region      = var.region
-    secret_arn  = aws_secretsmanager_secret.harness.arn
-    data_device = "/dev/xvdf"
-  })
+  user_data_base64 = base64gzip(templatefile("${path.module}/templates/opensearch-cloud-init.yaml.tftpl", {
+    region             = var.region
+    secret_arn         = aws_secretsmanager_secret.harness.arn
+    pins               = local.pins
+    baked              = local.baked
+    install_script_b64 = local.opensearch_install_b64
+  }))
 
   depends_on = [aws_route_table_association.private, aws_nat_gateway.main]
+
+  lifecycle {
+    precondition {
+      condition     = !local.baked || local.amis.opensearch != ""
+      error_message = "Checkpoint ${var.checkpoint} has no baked OpenSearch AMI. Set enable_opensearch = false or bake one (checkpoints/bake.sh)."
+    }
+  }
 
   tags = { Name = "${var.name_prefix}-opensearch" }
 }
@@ -144,6 +157,7 @@ resource "aws_instance" "sift" {
   ami                    = local.sift_ami
   instance_type          = var.sift_instance_type
   subnet_id              = aws_subnet.private.id
+  private_ip             = local.ip.sift
   vpc_security_group_ids = [aws_security_group.sift.id]
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["sift"].name
@@ -159,14 +173,19 @@ resource "aws_instance" "sift" {
     kms_key_id  = aws_kms_key.main.arn
   }
 
-  user_data = local.sift_user_data
+  # gzip: cloud-init detects compressed user data; EC2 caps it at 16 KB.
+  user_data_base64 = base64gzip(local.sift_user_data)
 
   depends_on = [aws_route_table_association.private, aws_nat_gateway.main]
 
   lifecycle {
     precondition {
-      condition     = length(local.sift_user_data) <= 16384
-      error_message = "SIFT user_data exceeds EC2's 16 KB limit; shrink install-sift.sh or the cloud-init template."
+      condition     = !local.baked || local.amis.sift != ""
+      error_message = "Checkpoint ${var.checkpoint} has no baked SIFT AMI."
+    }
+    precondition {
+      condition     = length(base64gzip(local.sift_user_data)) <= 21844 # 16 KB once base64-decoded
+      error_message = "SIFT user_data exceeds EC2's 16 KB limit even gzipped; shrink install-sift.sh or the cloud-init template."
     }
   }
 
@@ -197,6 +216,7 @@ resource "aws_instance" "remnux" {
   ami                    = local.remnux_ami
   instance_type          = var.remnux_instance_type
   subnet_id              = aws_subnet.private.id
+  private_ip             = local.ip.remnux
   vpc_security_group_ids = [aws_security_group.remnux[0].id]
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["remnux"].name
@@ -212,17 +232,24 @@ resource "aws_instance" "remnux" {
     kms_key_id  = aws_kms_key.main.arn
   }
 
-  user_data = templatefile("${path.module}/templates/remnux-cloud-init.yaml.tftpl", {
+  user_data_base64 = base64gzip(templatefile("${path.module}/templates/remnux-cloud-init.yaml.tftpl", {
     region             = var.region
     secret_arn         = aws_secretsmanager_secret.harness.arn
-    cast_version       = var.cast_version
-    remnux_mode        = var.remnux_mode
-    remnux_user        = var.remnux_user
-    baked              = local.remnux_baked
+    remnux_mode        = local.remnux_mode
+    remnux_user        = local.remnux_user
+    pins               = local.pins
+    baked              = local.baked
     install_script_b64 = local.remnux_install_b64
-  })
+  }))
 
   depends_on = [aws_route_table_association.private, aws_nat_gateway.main]
+
+  lifecycle {
+    precondition {
+      condition     = !local.baked || local.amis.remnux != ""
+      error_message = "Checkpoint ${var.checkpoint} has no baked REMnux AMI. Set enable_remnux = false or bake one (checkpoints/bake.sh)."
+    }
+  }
 
   tags = { Name = "${var.name_prefix}-remnux" }
 }
@@ -233,9 +260,10 @@ resource "aws_instance" "remnux" {
 
 resource "aws_instance" "windows" {
   count                  = var.enable_windows ? 1 : 0
-  ami                    = data.aws_ssm_parameter.windows2022[0].value
+  ami                    = local.windows_ami
   instance_type          = var.windows_instance_type
   subnet_id              = aws_subnet.private.id
+  private_ip             = local.ip.windows
   vpc_security_group_ids = [aws_security_group.windows[0].id]
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["windows"].name
@@ -253,14 +281,22 @@ resource "aws_instance" "windows" {
   }
 
   user_data = templatefile("${path.module}/templates/windows-userdata.ps1.tftpl", {
-    region        = var.region
-    secret_arn    = aws_secretsmanager_secret.harness.arn
-    sift_ip       = aws_instance.sift.private_ip
-    sift_user     = var.sift_user
-    examiner_name = var.examiner_name
+    region          = var.region
+    sift_ip         = local.ip.sift
+    examiner_name   = var.examiner_name
+    join_code_param = local.join_code_param
+    pins            = local.pins
+    baked           = local.baked
   })
 
   depends_on = [aws_route_table_association.private, aws_nat_gateway.main]
+
+  lifecycle {
+    precondition {
+      condition     = !local.baked || local.amis.windows != ""
+      error_message = "Checkpoint ${var.checkpoint} has no baked Windows AMI. Set enable_windows = false or bake one (checkpoints/bake.sh)."
+    }
+  }
 
   tags = { Name = "${var.name_prefix}-windows" }
 }

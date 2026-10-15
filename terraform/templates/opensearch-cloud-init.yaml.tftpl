@@ -1,38 +1,41 @@
 #cloud-config
-# OpenSearch data store (dedicated host). opensearch-mcp on the SIFT box
-# connects here over the private network on :9200.
-
-package_update: true
-packages:
-  - jq
-  - unzip
-  - apt-transport-https
-  - ca-certificates
-  - curl
+# OpenSearch data store (dedicated host). opensearch-mcp on SIFT connects here
+# over the private network on :9200 (security group: SIFT only).
+#
+# The node is deployed with upstream's own tooling (AppliedIR/opensearch-mcp:
+# docker-compose.yml + scripts/setup-opensearch.sh), so it gets the exact
+# OpenSearch version, cluster settings, GeoIP pipeline and Security Analytics
+# setup that sift-mcp is tested against. Two local adjustments, via the compose
+# override file: listen on the private IP (upstream binds 127.0.0.1 because it
+# normally runs on SIFT itself), and keep indices on the dedicated EBS volume.
 
 write_files:
-  - path: /usr/local/sbin/opensearch-bootstrap.sh
+%{ if !baked ~}
+  # Heavy install (single-sourced with Packer); only run here for checkpoint=latest.
+  - path: /usr/local/sbin/install-opensearch.sh
+    permissions: "0755"
+    owner: root:root
+    encoding: gz+b64
+    content: ${install_script_b64}
+%{ endif ~}
+
+  - path: /usr/local/sbin/opensearch-firstboot.sh
     permissions: "0750"
     owner: root:root
     content: |
       #!/usr/bin/env bash
       set -euxo pipefail
-      exec > /var/log/opensearch-bootstrap.log 2>&1
-
+      exec > /var/log/opensearch-firstboot.log 2>&1
+      export HOME=/root
       REGION="${region}"
       SECRET_ARN="${secret_arn}"
-      DATA_DEV="${data_device}"
+      SRC=/opt/vhir/opensearch-mcp
 
-      # --- 0. Wait for egress + AWS CLI v2 ----------------------------------
-      # 'awscli' is not an apt package on Ubuntu 24.04; install v2 from bundle.
-      for i in $(seq 1 30); do
-        curl -4 -sS -m 10 -o /dev/null https://archive.ubuntu.com 2>/dev/null && break
-        echo "waiting for egress ($i)..."; sleep 10
-      done
-      if ! command -v aws >/dev/null 2>&1; then
-        curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-        unzip -q -o /tmp/awscliv2.zip -d /tmp && /tmp/aws/install --update
-      fi
+      %{ if !baked ~}
+      # --- 0. Install (checkpoint=latest) ------------------------------------
+      OPENSEARCH_MCP_REF="${pins.opensearch_mcp}" DOCKER_VERSION="${pins.docker}" \
+        AWSCLI_VERSION="${pins.awscli}" /usr/local/sbin/install-opensearch.sh
+      %{ endif ~}
 
       # --- 1. Mount the indices volume (wait for the non-root EBS disk) ------
       ROOT_DISK=$(lsblk -npo PKNAME "$(findmnt -no SOURCE /)" | head -1)
@@ -45,39 +48,44 @@ write_files:
         [ -n "$DEV" ] && break
         echo "waiting for data volume to attach ($i)..."; sleep 5
       done
+      [ -n "$DEV" ] || { echo "ERROR: no data volume attached" >&2; exit 1; }
       mkdir -p /var/lib/opensearch-data
-      if [ -n "$DEV" ]; then
-        blkid "$DEV" || mkfs.ext4 -L osdata "$DEV"
-        grep -q '/var/lib/opensearch-data' /etc/fstab || \
-          echo "LABEL=osdata /var/lib/opensearch-data ext4 defaults,nofail 0 2" >> /etc/fstab
-        mount -a
-      fi
-      # OpenSearch container runs as uid 1000
-      chown -R 1000:1000 /var/lib/opensearch-data
+      blkid "$DEV" || mkfs.ext4 -L osdata "$DEV"
+      grep -q '/var/lib/opensearch-data' /etc/fstab || \
+        echo "LABEL=osdata /var/lib/opensearch-data ext4 defaults,nofail 0 2" >> /etc/fstab
+      mount -a
+      chown 1000:1000 /var/lib/opensearch-data   # uid of opensearch in the image
 
-      # --- 2. Docker --------------------------------------------------------
-      curl -fsSL https://get.docker.com | sh
-      sysctl -w vm.max_map_count=262144
-      echo "vm.max_map_count=262144" > /etc/sysctl.d/99-opensearch.conf
+      # --- 2. Compose override: private-IP listener + data on the EBS volume --
+      # (keeps upstream's snapshot mount, which setup-opensearch.sh checks for)
+      cat > "$SRC/docker/docker-compose.override.yml" <<'EOF'
+      services:
+        opensearch:
+          ports: !override
+            - "9200:9200"
+          volumes: !override
+            - /var/lib/opensearch-data:/usr/share/opensearch/data
+            - /var/lib/vhir/snapshots:/usr/share/opensearch/snapshots
+      EOF
 
-      # --- 3. Admin password from secret ------------------------------------
-      SECRET=$(aws --region "$REGION" secretsmanager get-secret-value \
-        --secret-id "$SECRET_ARN" --query SecretString --output text)
-      OS_ADMIN_PW=$(echo "$SECRET" | jq -r .opensearch_admin)
+      # --- 3. Admin password from Secrets Manager -----------------------------
+      # setup-opensearch.sh uses an existing ~/.vhir/opensearch.yaml as-is.
+      OS_PW=$(aws --region "$REGION" secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
+        --query SecretString --output text | jq -r .opensearch_admin)
+      install -d -m 700 /root/.vhir
+      install -m 600 /dev/null /root/.vhir/opensearch.yaml
+      printf 'host: https://localhost:9200\nuser: admin\npassword: %s\nverify_certs: false\n' "$OS_PW" \
+        > /root/.vhir/opensearch.yaml
 
-      # --- 4. Run OpenSearch (single node) ----------------------------------
-      # Binds to all interfaces; SG restricts :9200 to the SIFT host only.
-      docker run -d --name opensearch --restart unless-stopped \
-        -p 9200:9200 -p 9600:9600 \
-        -e discovery.type=single-node \
-        -e bootstrap.memory_lock=true \
-        -e "OPENSEARCH_JAVA_OPTS=-Xms6g -Xmx6g" \
-        -e "OPENSEARCH_INITIAL_ADMIN_PASSWORD=$OS_ADMIN_PW" \
-        --ulimit memlock=-1:-1 --ulimit nofile=65536:65536 \
-        -v /var/lib/opensearch-data:/usr/share/opensearch/data \
-        opensearchproject/opensearch:2
+      # --- 4. Upstream setup: start node, cluster settings, GeoIP, analytics ---
+      bash "$SRC/scripts/setup-opensearch.sh" < /dev/null
 
-      echo "opensearch-bootstrap complete"
+      # --- 5. Health on the private interface (what SIFT will use) ------------
+      IP=$(hostname -I | awk '{print $1}')
+      curl -sfk -m 10 -u "admin:$OS_PW" "https://$IP:9200/_cluster/health" \
+        || { echo "ERROR: OpenSearch not reachable on $IP:9200" >&2; exit 1; }
+
+      echo "opensearch-firstboot complete"
 
 runcmd:
-  - /usr/local/sbin/opensearch-bootstrap.sh
+  - /usr/local/sbin/opensearch-firstboot.sh

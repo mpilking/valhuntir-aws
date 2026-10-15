@@ -1,0 +1,43 @@
+{
+  "name": "2026-07-12",
+  "status": "candidate",
+  "description": "Every component at the version current on 2026-07-12 19:00 UTC — the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
+  "region": "us-east-1",
+  "validated_on": "",
+  "iac_commit": "",
+  "build": {
+    "sift_user": "sansforensics",
+    "sift_mode": "desktop",
+    "remnux_user": "remnux",
+    "remnux_mode": "dedicated"
+  },
+  "pins": {
+    "ubuntu_ami": "ami-0a02a779008fa3b99",
+    "windows_base_ami": "",
+    "awscli": "2.35.21",
+    "cast": "v1.0.22",
+    "sift_saltstack": "v2026.04.21",
+    "sift_mcp": "c67a860ea70c38dc3c5243193a76f0bcbd6db18f",
+    "valhuntir": "ce1ae368f425402545414eea50998608f4b887d7",
+    "opensearch_mcp": "3d7d4a6f38e1a91bb8a0aaa424cc3fc7da7aef25",
+    "pypi_exclude_newer": "2026-07-12T19:00:00Z",
+    "remnux_saltstack": "v2026.28.1",
+    "remnux_mcp_server": "0.1.61",
+    "nodejs": "22.23.1",
+    "docker": "29.6.1",
+    "wintools_mcp": "b58a60161f30188fe295f23f3655c503ae5c0a4d",
+    "choco_git": "2.55.0.2",
+    "choco_python312": "3.12.10"
+  },
+  "amis": {
+    "sift": "",
+    "remnux": "",
+    "opensearch": "",
+    "windows": ""
+  },
+  "notes": [
+    "ubuntu_ami is Canonical's noble 20260626 build, the one SIFT was validated on in July.",
+    "windows_base_ami is the Windows Server 2022 base AMI current at bake time: AWS deregisters old Windows AMIs, so July's is no longer available. The baked Windows AMI preserves the exact OS.",
+    "OpenSearch 3.5.0 comes from opensearch-mcp's docker-compose.yml at the pinned commit; Docker Hub rebuilds tags monthly, so the exact image digest is recorded in /etc/valhuntir/versions/opensearch on the baked AMI."
+  ]
+}

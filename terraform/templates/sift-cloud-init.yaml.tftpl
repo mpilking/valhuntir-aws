@@ -27,6 +27,7 @@ write_files:
       echo "Fetched. Register chain of custody with:"
       echo "  vhir evidence register $DEST/*"
 
+%{ if !baked ~}
   # The heavy install script (single-sourced with Packer). base64 so YAML block
   # indentation cannot corrupt it. Only executed here when not baked.
   - path: /usr/local/sbin/install-sift.sh
@@ -34,6 +35,7 @@ write_files:
     owner: root:root
     encoding: gz+b64
     content: ${install_script_b64}
+%{ endif ~}
 
   # Per-instance gateway TLS: same layout/parameters as setup-sift.sh --remote,
   # but run on THIS host so the SAN carries its own IP and the CA key is unique.
@@ -56,15 +58,17 @@ write_files:
       chmod 600 "$D/ca-key.pem" "$D/gateway-key.pem"; chmod 644 "$D/ca-cert.pem" "$D/gateway-cert.pem"
       echo "gateway TLS generated (SAN: $SAN)"
 
-  # Installs the per-instance bearer token. Fails closed: the gateway treats an
-  # empty api_keys map as "auth disabled", so a bad token must stop firstboot.
-  - path: /usr/local/sbin/vhir-set-gateway-token.py
+  # Installs the per-instance bearer token and the remote worker backends.
+  # Fails closed: the gateway treats an empty api_keys map as "auth disabled",
+  # so a bad token must stop firstboot.
+  - path: /usr/local/sbin/vhir-configure-gateway.py
     permissions: "0755"
     owner: root:root
     content: |
-      """vhir-set-gateway-token.py <gateway.yaml> <token> <examiner> <tls_dir>"""
+      """vhir-configure-gateway.py <gateway.yaml> <token> <examiner> <tls_dir> <remnux_url> <remnux_token> <opensearch_cfg>
+      Empty remnux_url / opensearch_cfg = that worker is not deployed."""
       import os, re, sys, yaml
-      path, token, examiner, tls_dir = sys.argv[1:5]
+      path, token, examiner, tls_dir, remnux_url, remnux_token, os_cfg = sys.argv[1:8]
       if not re.fullmatch(r"vhir_gw_[0-9a-f]{24}", token):
           sys.exit("ERROR: gateway token missing or malformed; refusing to configure the gateway")
       with open(path) as f:
@@ -74,12 +78,44 @@ write_files:
           "certfile": os.path.join(tls_dir, "gateway-cert.pem"),
           "keyfile": os.path.join(tls_dir, "gateway-key.pem"),
       }
+      backends = cfg.setdefault("backends", {}) or {}
+      cfg["backends"] = backends
+      if remnux_url:  # proxied through the gateway (gateway.yaml.example remnux-mcp)
+          backends["remnux-mcp"] = {"type": "http", "url": remnux_url,
+                                    "bearer_token": remnux_token, "enabled": True}
+      if os_cfg:      # same entry upstream setup-opensearch.sh registers
+          py = os.path.join(os.path.dirname(path), "venv", "bin", "python")
+          backends["opensearch-mcp"] = {"type": "stdio", "command": py,
+                                        "args": ["-m", "opensearch_mcp"],
+                                        "env": {"OPENSEARCH_CONFIG": os_cfg}, "enabled": True}
       tmp = path + ".tmp"
       with open(tmp, "w") as f:
           yaml.safe_dump(cfg, f, sort_keys=False)
       os.chmod(tmp, 0o600)
       os.replace(tmp, path)
       print("gateway token installed for examiner " + repr(examiner))
+
+  # Windows join hand-off (upstream `vhir setup join-code` flow, unattended):
+  # mint a one-time code from the gateway, configure the Samba case share with
+  # upstream's own code (it reads the Windows IP from stdin), and publish the code
+  # for the Windows host. Re-run to re-join a replaced Windows host.
+  - path: /usr/local/sbin/vhir-publish-join-code.sh
+    permissions: "0750"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      SIFT_USER="${sift_user}"; H="/home/$SIFT_USER"; WIN_IP="${windows_ip}"
+      TOKEN=$(aws --region "${region}" secretsmanager get-secret-value --secret-id "${secret_arn}" \
+        --query SecretString --output text | jq -r .gateway_api_key)
+      CODE=$(curl -sk -m 30 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+        -d '{"expires_hours":48}' https://127.0.0.1:4508/api/v1/setup/join-code | jq -r '.code // empty')
+      [ -n "$CODE" ] || { echo "ERROR: gateway returned no join code" >&2; exit 1; }
+      echo "$WIN_IP" | sudo -u "$SIFT_USER" HOME="$H" "$H/.vhir/venv/bin/python" -c \
+        'import sys; from vhir_cli.commands.join import _setup_samba_share as s; s(sys.argv[1])' "$CODE"
+      aws --region "${region}" ssm put-parameter --name "${join_code_param}" --type SecureString \
+        --key-id "${kms_key_arn}" --overwrite --value "$CODE" >/dev/null
+      echo "join code published for Windows host $WIN_IP"
 
   - path: /usr/local/sbin/valhuntir-firstboot.sh
     permissions: "0750"
@@ -94,6 +130,8 @@ write_files:
       SIFT_USER="${sift_user}"      # OS login account (sansforensics)
       EXAMINER="${examiner_name}"   # Valhuntir examiner identity (VHIR_EXAMINER)
       OPENSEARCH_URL="${opensearch_url}"
+      REMNUX_URL="${remnux_url}"
+      WINDOWS_IP="${windows_ip}"
       CASES_DEV="${cases_device}"
       HOME_DIR="/home/$SIFT_USER"
 
@@ -121,11 +159,11 @@ write_files:
       fi
 
       %{ if !baked ~}
-      # --- 2. Heavy install (not baked) — apt, cast SIFT, sift-mcp stack ----
-      SIFT_USER="$SIFT_USER" CAST_VER="${cast_version}" SIFT_MODE="${sift_mode}" \
-        SIFT_SALTSTACK_VERSION="${sift_saltstack_ver}" SIFT_MCP_REF="${sift_mcp_ref}" \
-        VALHUNTIR_REF="${valhuntir_ref}" AWSCLI_VERSION="${awscli_version}" \
-        PYPI_EXCLUDE_NEWER="${pypi_exclude_newer}" \
+      # --- 2. Heavy install (checkpoint=latest) — apt, cast SIFT, sift-mcp ----
+      SIFT_USER="$SIFT_USER" CAST_VER="${pins.cast}" SIFT_MODE="${sift_mode}" \
+        SIFT_SALTSTACK_VERSION="${pins.sift_saltstack}" SIFT_MCP_REF="${pins.sift_mcp}" \
+        VALHUNTIR_REF="${pins.valhuntir}" AWSCLI_VERSION="${pins.awscli}" \
+        PYPI_EXCLUDE_NEWER="${pins.pypi_exclude_newer}" \
         /usr/local/sbin/install-sift.sh
       %{ endif ~}
 
@@ -134,6 +172,7 @@ write_files:
         --secret-id "$SECRET_ARN" --query SecretString --output text)
       LOGIN_PW=$(echo "$SECRET" | jq -r .examiner_password)
       OS_ADMIN_PW=$(echo "$SECRET" | jq -r .opensearch_admin)
+      REMNUX_TOKEN=$(echo "$SECRET" | jq -r .remnux_mcp_token)
 
       # --- 4. Apply the sansforensics login password + case-dir ownership ---
       echo "$SIFT_USER:$LOGIN_PW" | chpasswd
@@ -148,18 +187,18 @@ write_files:
       if ! grep -q 'VHIR_EXAMINER' "$HOME_DIR/.bashrc" 2>/dev/null; then
         echo "export VHIR_EXAMINER=$EXAMINER" >> "$HOME_DIR/.bashrc"
       fi
+      # opensearch-mcp reads ~/.vhir/opensearch.yaml (same keys upstream writes;
+      # the remote node uses the security plugin's self-signed demo certs).
+      OS_CFG=""
       if [ -n "$OPENSEARCH_URL" ]; then
-        # TODO(verify): exact env/config the opensearch-mcp backend reads.
-        {
-          echo "OPENSEARCH_URL=$OPENSEARCH_URL"
-          echo "OPENSEARCH_USER=admin"
-          echo "OPENSEARCH_PASSWORD=$OS_ADMIN_PW"
-          echo "OPENSEARCH_VERIFY_CERTS=false"
-        } > "$HOME_DIR/.vhir/env"
+        OS_CFG="$HOME_DIR/.vhir/opensearch.yaml"
+        install -m 600 -o "$SIFT_USER" -g "$SIFT_USER" /dev/null "$OS_CFG"
+        printf 'host: %s\nuser: admin\npassword: %s\nverify_certs: false\n' \
+          "$OPENSEARCH_URL" "$OS_ADMIN_PW" > "$OS_CFG"
       fi
       chown -R "$SIFT_USER":"$SIFT_USER" "$HOME_DIR/.vhir"
 
-      # --- 6. Per-instance gateway TLS + bearer token (fail closed) ---------
+      # --- 6. Per-instance gateway TLS, bearer token, worker backends -------
       # Baked AMIs ship with neither (removed by scrub-sift.sh); a from-base
       # install already has a cert setup-sift.sh made for this host, so the cert
       # is generated only if absent. The token always comes from Secrets Manager
@@ -170,8 +209,9 @@ write_files:
         sudo -u "$SIFT_USER" /usr/local/sbin/vhir-gen-tls.sh "$TLS_DIR" \
           "$(hostname -I | awk '{print $1}')" "$(hostname)"
       fi
-      sudo -u "$SIFT_USER" "$HOME_DIR/.vhir/venv/bin/python" /usr/local/sbin/vhir-set-gateway-token.py \
-        "$HOME_DIR/.vhir/gateway.yaml" "$GW_TOKEN" "$EXAMINER" "$TLS_DIR"
+      sudo -u "$SIFT_USER" "$HOME_DIR/.vhir/venv/bin/python" /usr/local/sbin/vhir-configure-gateway.py \
+        "$HOME_DIR/.vhir/gateway.yaml" "$GW_TOKEN" "$EXAMINER" "$TLS_DIR" \
+        "$REMNUX_URL" "$REMNUX_TOKEN" "$OS_CFG"
 
       # --- 7. Start the gateway (persistent per-user service 'vhir-gateway') --
       # Only reached once the token is in place (set -e stops us otherwise).
@@ -194,6 +234,11 @@ write_files:
       done
       curl -sk -o /dev/null -m 5 https://127.0.0.1:4508/health \
         || { echo "ERROR: gateway did not become healthy" >&2; exit 1; }
+
+      # --- 8. Windows worker: publish a join code (it registers itself) ------
+      if [ -n "$WINDOWS_IP" ]; then
+        /usr/local/sbin/vhir-publish-join-code.sh
+      fi
 
       echo "valhuntir-firstboot complete"
 

@@ -7,3 +7,4 @@ crash.log
 *.tfstate
 *.tfstate.*
 .terraform/
+packer/logs/

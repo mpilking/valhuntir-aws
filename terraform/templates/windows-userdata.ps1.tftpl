@@ -1,69 +1,78 @@
 <powershell>
-# Windows wintools-mcp bootstrap.
-#   - installs wintools-mcp (serves :4624, reached from the SIFT host)
-#   - stores SIFT case-dir SMB credentials for the service account
-# Repo-specific steps to reconcile on first real run are marked TODO(verify).
+# Windows wintools-mcp first boot.
+#
+# Joins the SIFT gateway with upstream's own unattended flow:
+#   SIFT first boot mints a one-time join code, configures its Samba case share
+#   for this host's IP, and publishes the code to SSM Parameter Store. Here we
+#   wait for it and run setup-windows.ps1 -NonInteractive -JoinCode, which
+#   generates this host's bearer token + TLS cert, registers wintools-mcp with
+#   the gateway (the gateway hot-loads it), maps the case share, and installs the
+#   startup scheduled task. Nothing secret is baked into the AMI.
+#
+# Checkpoint deploys launch an AMI where install-windows.ps1 already staged the
+# pinned code + Python environment; checkpoint=latest installs the newest here.
 
-Start-Transcript -Path C:\valhuntir-bootstrap.log -Append
-$ErrorActionPreference = "Continue"
+Start-Transcript -Path C:\ProgramData\valhuntir\firstboot.log -Append
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 $Region    = "${region}"
-$SecretArn = "${secret_arn}"
 $SiftIp    = "${sift_ip}"
-$SiftUser  = "${sift_user}"       # SIFT OS/Samba account (sansforensics)
-$Examiner  = "${examiner_name}"   # Valhuntir examiner identity slug
+$Examiner  = "${examiner_name}"
+$CodeParam = "${join_code_param}"
+$Install   = "C:\Tools\vhir"
+$Wintools  = Join-Path $Install "wintools-mcp"
 
-# --- 1. Fetch the SIFT login password for the SMB mount ---------------------
-# The EC2 instance profile grants secretsmanager:GetSecretValue. AWS Tools for
-# PowerShell ships on the Windows Server AMI. The case-dir Samba share maps to
-# the SIFT OS user, so we authenticate as $SiftUser.
+function Update-Path {
+  $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") }
+
 try {
-  $secretJson = (Get-SECSecretValue -SecretId $SecretArn -Region $Region).SecretString
-  $secret     = $secretJson | ConvertFrom-Json
-  $siftPw     = $secret.examiner_password
+%{ if !baked ~}
+  # --- 0. checkpoint=latest: newest Git/Python; setup-windows.ps1 clones main --
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  Invoke-Expression ((New-Object Net.WebClient).DownloadString("https://community.chocolatey.org/install.ps1"))
+  Update-Path
+  choco install -y --no-progress git python312
+  Update-Path
+  New-Item -ItemType Directory -Force -Path $Install | Out-Null
+  if (-not (Test-Path $Wintools)) { git clone --quiet https://github.com/AppliedIR/wintools-mcp.git $Wintools }
+%{ endif ~}
+  Update-Path
+
+  # --- 1. Wait for SIFT to publish the join code (SIFT may still be booting) ---
+  $code = $null
+  for ($i = 0; $i -lt 360; $i++) {   # up to 3 h (checkpoint=latest SIFT installs take ~1.5 h)
+    try {
+      $v = (Get-SSMParameter -Name $CodeParam -WithDecryption $true -Region $Region).Value
+      if ($v -and $v -ne "pending") { $code = $v; break }
+    } catch { Write-Output "waiting for join code: $_" }
+    Start-Sleep -Seconds 30
+  }
+  if (-not $code) { throw "no join code from SIFT after 3 h" }
+
+  # --- 2. Upstream unattended install + join ------------------------------------
+  # No -StaticIP: on EC2 the address is fixed by Terraform, and the NIC must stay DHCP.
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Wintools "scripts\setup-windows.ps1") `
+    -NonInteractive -AcknowledgeSecurityHole -InstallDir $Install -Examiner $Examiner `
+    -BindAddress 0.0.0.0 -Port 4624 -GatewayHost $SiftIp -GatewayPort 4508 -JoinCode $code
+  if ($LASTEXITCODE -ne 0) { throw "setup-windows.ps1 failed ($LASTEXITCODE)" }
+
+  # --- 3. Firewall: wintools-mcp only from SIFT ---------------------------------
+  New-NetFirewallRule -DisplayName "wintools-mcp 4624 from SIFT" -Direction Inbound `
+    -Protocol TCP -LocalPort 4624 -RemoteAddress $SiftIp -Action Allow | Out-Null
+
+  # --- 4. Health: the server must be listening ----------------------------------
+  $up = $false
+  for ($i = 0; $i -lt 30; $i++) {
+    if (Get-NetTCPConnection -LocalPort 4624 -State Listen -ErrorAction SilentlyContinue) { $up = $true; break }
+    Start-Sleep -Seconds 5
+  }
+  if (-not $up) { throw "wintools-mcp is not listening on :4624" }
+  Write-Output "valhuntir-firstboot complete"
 } catch {
-  Write-Output "WARN: could not read secret: $_"
+  Write-Output "ERROR: $_"
+  exit 1
+} finally {
+  Stop-Transcript
 }
-
-# --- 2. Prerequisites: Python 3.10+ and Git via Chocolatey ------------------
-Set-ExecutionPolicy Bypass -Scope Process -Force
-[System.Net.ServicePointManager]::SecurityProtocol = 3072
-Invoke-WebRequest -UseBasicParsing https://community.chocolatey.org/install.ps1 | Invoke-Expression
-choco install -y git python312
-$env:Path += ";C:\Program Files\Git\cmd"
-
-# --- 3. Store SIFT SMB credentials for the service account ------------------
-# The wintools-mcp service reaches the case dir at \\$SiftIp\... over SMB. Store
-# the credential for the LocalSystem service account so the UNC path resolves
-# without an interactive mapped drive. TODO(verify) the exact share name that
-# setup-sift.sh --remote publishes.
-if ($SiftUser -and $siftPw) {
-  cmdkey /add:$SiftIp /user:$SiftUser /pass:$siftPw
-}
-
-# --- 4. Install wintools-mcp ------------------------------------------------
-# Unattended: -NonInteractive requires -AcknowledgeSecurityHole. Bind 0.0.0.0 so
-# the SIFT host can reach :4624; the installer generates a vhir_wt_ bearer token.
-git clone https://github.com/AppliedIR/wintools-mcp.git C:\wintools-mcp
-Push-Location C:\wintools-mcp
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 `
-  -NonInteractive -AcknowledgeSecurityHole `
-  -BindAddress 0.0.0.0 -Port 4624 `
-  -Examiner $Examiner -StaticIP (Get-NetIPAddress -AddressFamily IPv4 `
-    -PrefixOrigin Dhcp,Manual | Select-Object -First 1 -ExpandProperty IPAddress)
-Pop-Location
-
-# --- 5. Firewall: allow :4624 from the SIFT host only -----------------------
-New-NetFirewallRule -DisplayName "wintools-mcp 4624 from SIFT" -Direction Inbound `
-  -Protocol TCP -LocalPort 4624 -RemoteAddress $SiftIp -Action Allow
-
-# --- 6. Client wiring (manual/one-time) -------------------------------------
-# setup-windows.ps1 generates the bearer token during install (no fixed-token
-# flag exists). To let the SIFT LLM client reach wintools-mcp, retrieve the
-# token on this host and register it on SIFT:
-#   vhir setup client --windows=$SiftIp-facing-IP:4624   (paste the token)
-# TODO(verify): the installer's on-disk token location (under C:\Tools\vhir).
-
-Stop-Transcript
 </powershell>
-<persist>true</persist>
