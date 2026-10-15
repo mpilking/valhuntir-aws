@@ -1,10 +1,10 @@
 {
   "name": "2026-07-12",
-  "status": "candidate",
+  "status": "validated",
   "description": "Every component at the version current on 2026-07-12 19:00 UTC — the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
   "region": "us-east-1",
-  "validated_on": "",
-  "iac_commit": "",
+  "validated_on": "2026-10-15",
+  "iac_commit": "5fa0aa3f3675c2ace1404f5d6eafd0af078da5dd",
   "build": {
     "sift_user": "sansforensics",
     "sift_mode": "desktop",
@@ -38,6 +38,7 @@
   "notes": [
     "ubuntu_ami is Canonical's noble 20260626 build, the one SIFT was validated on in July.",
     "windows_base_ami is Windows_Server-2022-English-Full-Base-2026.07.15, the oldest still available when this checkpoint was baked (AWS had already deregistered the June image current on 2026-07-12). The baked Windows AMI preserves the exact OS from here on.",
-    "OpenSearch 3.5.0 comes from opensearch-mcp's docker-compose.yml at the pinned commit; Docker Hub rebuilds tags monthly, so the exact image digest is recorded in /etc/valhuntir/versions/opensearch on the baked AMI."
+    "OpenSearch 3.5.0 comes from opensearch-mcp's docker-compose.yml at the pinned commit; Docker Hub rebuilds tags monthly, so the exact image digest is recorded in /etc/valhuntir/versions/opensearch on the baked AMI.",
+    "Validated 2026-10-15 by a clean full-stack deploy (all four hosts): 9/9 gateway backends ok incl. remnux-mcp, opensearch-mcp, wintools-mcp; Windows joined + case share mapped unattended. REMnux at these pins has 12 failed salt states (Malcat Lite, Speakeasy helper checksums changed upstream since July)."
   ]
 }
