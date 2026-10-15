@@ -119,6 +119,35 @@ write_files:
         --key-id "${kms_key_arn}" --overwrite --value "$VALUE" >/dev/null
       echo "join code published for Windows host $WIN_IP"
 
+  # After the Windows join: make sure the gateway actually loaded wintools-mcp.
+  # The join hot-loads it before the Windows server is listening; the July
+  # sift-gateway's backend loader can die on that failure and never retry. Once
+  # Windows answers on :4624, request a reload, then restart the gateway if the
+  # backend is still missing. No-op when it loaded by itself.
+  - path: /usr/local/sbin/vhir-wintools-attach.sh
+    permissions: "0750"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -uo pipefail
+      SU="${sift_user}"; RT="/run/user/$(id -u "$SU")"; WIN="${windows_ip}"
+      TOKEN=$(aws --region "${region}" secretsmanager get-secret-value --secret-id "${secret_arn}" \
+        --query SecretString --output text | jq -r .gateway_api_key)
+      gw() { curl -sk -m 60 -H "Authorization: Bearer $TOKEN" "$@"; }
+      loaded() { gw https://127.0.0.1:4508/api/v1/backends | jq -e '.backends[] | select(.name=="wintools-mcp" and .health.status=="ok")' >/dev/null; }
+      for i in $(seq 1 360); do   # up to 3 h: Windows may still be booting/installing
+        loaded && { echo "wintools-mcp loaded"; exit 0; }
+        if grep -q 'wintools-mcp' "/home/$SU/.vhir/gateway.yaml" &&
+           [ "$(curl -sk -o /dev/null -w '%%{http_code}' -m 5 "https://$WIN:4624/mcp")" != 000 ]; then
+          gw -X POST https://127.0.0.1:4508/api/v1/backends/reload; echo; sleep 60
+          loaded && { echo "wintools-mcp loaded after reload"; exit 0; }
+          sudo -u "$SU" XDG_RUNTIME_DIR="$RT" systemctl --user restart vhir-gateway; sleep 60
+          loaded && { echo "wintools-mcp loaded after gateway restart"; exit 0; }
+        fi
+        sleep 30
+      done
+      echo "ERROR: wintools-mcp never loaded" >&2; exit 1
+
   - path: /usr/local/sbin/valhuntir-firstboot.sh
     permissions: "0750"
     owner: root:root
@@ -281,6 +310,8 @@ write_files:
       echo "== 8. Windows worker: publish a join code (it registers itself)"
       if [ -n "$WINDOWS_IP" ]; then
         /usr/local/sbin/vhir-publish-join-code.sh
+        # Runs on after first boot; journalctl -u vhir-wintools-attach for its log.
+        systemd-run --unit=vhir-wintools-attach --no-block /usr/local/sbin/vhir-wintools-attach.sh
       fi
 
       echo "valhuntir-firstboot complete"
