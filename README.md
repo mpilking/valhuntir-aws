@@ -17,10 +17,12 @@ needs. Short version:
 - **Evidence** goes into a dedicated **WORM S3 bucket** (Object Lock + versioning
   + SSE-KMS) and is pulled onto SIFT over an **S3 VPC endpoint** — never over the
   internet or the bastion.
-- Each host **provisions itself on first boot** via cloud-init running the
-  upstream `setup-sift.sh` / installers. For SIFT and REMnux you can instead
-  **pre-bake golden AMIs with Packer** (`packer/`) so the slow `cast` salt run
-  happens once at build time — set `sift_ami` / `remnux_ami` to use them.
+- Every deploy names a **checkpoint** — a tested set of baked AMIs for all four
+  hosts plus the exact upstream versions they contain
+  ([checkpoints/README.md](checkpoints/README.md)). Deploys boot in minutes and
+  upstream drift can't break them. `checkpoint=latest` instead installs the
+  newest upstream versions from scratch, to try them before cutting a new
+  checkpoint.
 
 ## Layout
 
@@ -31,30 +33,27 @@ terraform/
 ├── security_groups.tf      # least-privilege SGs per host
 ├── kms.tf secrets.tf iam.tf
 ├── evidence.tf             # WORM S3 bucket + bucket policy
+├── checkpoint.tf           # which software: checkpoints/<name>.json or "latest"
 ├── ami.tf instances.tf     # bastion, SIFT, OpenSearch, Windows, REMnux
 ├── outputs.tf
 ├── terraform.tfvars.example
 └── templates/              # cloud-init / user-data per host
-packer/                     # optional golden AMIs (bake the cast salt run)
-├── sift.pkr.hcl remnux.pkr.hcl
-├── scripts/                # install-*.sh — shared with cloud-init
-└── README.md
+checkpoints/                # <name>.json (pins + AMI ids), new.sh, bake.sh, promote.sh
+packer/                     # AMI builds for all four hosts (run via checkpoints/bake.sh)
+├── variables.pkr.hcl sift.pkr.hcl remnux.pkr.hcl opensearch.pkr.hcl windows.pkr.hcl
+├── scripts/                # install-*.sh/.ps1 — shared with checkpoint=latest cloud-init
+└── build-vpc/              # one-time public subnet for builds (free while idle)
 bootstrap/                  # one-time: S3 bucket for remote state (local state)
 ```
 
-## Fast boots with pre-baked AMIs (optional)
+## Checkpoints (what software gets deployed)
 
-By default SIFT/REMnux run the `cast` salt install at first boot (~20–40 min).
-To make boots fast, build golden AMIs once and reference them:
-
-```bash
-cd packer && packer init . && packer build sift.pkr.hcl && packer build remnux.pkr.hcl
-# then set sift_ami / remnux_ami in terraform/terraform.tfvars
-```
-
-The install logic (`packer/scripts/install-*.sh`) is shared between the Packer
-build and the from-base cloud-init, so both produce identical software. See
-[packer/README.md](packer/README.md).
+`terraform apply` requires `-var checkpoint=<name>` (or `checkpoint = ...` in
+`terraform.tfvars`). Available checkpoints are the JSON files in
+[checkpoints/](checkpoints/); deploy one from its git tag
+(`git checkout checkpoint/<name>`) to reproduce exactly what was tested. See
+[checkpoints/README.md](checkpoints/README.md) for `latest`, cutting new
+checkpoints, and validation.
 
 ## Remote state (recommended for teams)
 
@@ -85,7 +84,7 @@ To keep local state instead, just delete `terraform/backend.tf`.
 ```bash
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
-# edit terraform.tfvars: set allowed_admin_cidrs to YOUR_IP/32 and ssh_public_key
+# edit terraform.tfvars: set checkpoint, allowed_admin_cidrs (YOUR_IP/32), ssh_public_key
 
 # with remote state:
 terraform init -backend-config=backend.hcl

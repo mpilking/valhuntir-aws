@@ -226,6 +226,23 @@ write_files:
         "$HOME_DIR/.vhir/gateway.yaml" "$GW_TOKEN" "$EXAMINER" "$TLS_DIR" \
         "$REMNUX_URL" "$REMNUX_TOKEN" "$OS_CFG"
 
+      %{ if baked ~}
+      # --- 6b. Pre-read the gateway's files (baked AMI) ---------------------
+      echo "== 6b. Pre-read the gateway's files (baked AMI)"
+      # A volume restored from an AMI snapshot loads blocks lazily from S3 on
+      # first read, slowest for a single stream. Backends that open big files at
+      # start (windows-triage's 5.9 GB known_good.db, torch libs for RAG) then hit
+      # the gateway's start timeout. Read ~/.vhir in parallel 64 MB chunks first.
+      t0=$(date +%s)
+      find "$HOME_DIR/.vhir" -xdev -type f -size +64k -printf '%s %p\n' |
+        while read -r size path; do
+          n=$(( (size + 67108863) / 67108864 ))
+          for ((c = 0; c < n; c++)); do printf '%s\0%s\0' "$path" "$c"; done
+        done |
+        xargs -0 -n 2 -P 64 sh -c 'dd if="$0" of=/dev/null bs=4M skip=$(( $1 * 16 )) count=16 status=none'
+      echo "pre-read $(du -sh "$HOME_DIR/.vhir" | cut -f1) in $(( $(date +%s) - t0 ))s"
+      %{ endif ~}
+
       # --- 7. Start the gateway (persistent per-user service 'vhir-gateway') --
       echo "== 7. Start the gateway (persistent per-user service 'vhir-gateway')"
       # Only reached once the token is in place (set -e stops us otherwise).
@@ -248,6 +265,17 @@ write_files:
       done
       curl -sk -o /dev/null -m 5 https://127.0.0.1:4508/health \
         || { echo "ERROR: gateway did not become healthy" >&2; exit 1; }
+
+      # Backends start asynchronously; record when every one reports ok (warn,
+      # don't fail: a worker host may still be booting).
+      for i in $(seq 1 60); do
+        BK=$(curl -sk -m 60 -H "Authorization: Bearer $GW_TOKEN" https://127.0.0.1:4508/api/v1/backends \
+          | jq -r '.backends[] | "\(.name)=\(.health.status)"' | sort | tr '\n' ' ')
+        NOT_OK=$(echo "$BK" | tr ' ' '\n' | grep '=' | grep -cv '=ok$' || true)
+        [ -n "$BK" ] && [ "$NOT_OK" = 0 ] && break
+        sleep 10
+      done
+      echo "backends: $BK"
 
       # --- 8. Windows worker: publish a join code (it registers itself) ------
       echo "== 8. Windows worker: publish a join code (it registers itself)"

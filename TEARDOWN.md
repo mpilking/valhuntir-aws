@@ -121,22 +121,30 @@ These don't block `destroy`; they enter a waiting period and keep existing
 
 ---
 
-## 6. Packer golden AMIs (not Terraform-managed)
+## 6. Checkpoint AMIs and the build network (not managed by the main config)
 
-AMIs built by `packer/` are **not** tracked by Terraform, so `destroy` leaves
-them (and their backing snapshots) in place — each snapshot bills ~$0.05/GB/mo.
-Remove them manually when done:
+Each checkpoint's four AMIs ([checkpoints/](checkpoints/README.md)) are **not**
+tracked by Terraform, so `destroy` leaves them — deliberately: they are what lets
+you redeploy a known-good stack later. Their snapshots bill on used blocks
+(roughly $5–10/month per checkpoint). To retire a checkpoint:
 
 ```bash
-# Find them (tagged Project=valhuntir)
+# list them (tagged Project=valhuntir, Checkpoint=<name>)
 aws ec2 describe-images --owners self \
   --filters "Name=tag:Project,Values=valhuntir" \
-  --query 'Images[].{Id:ImageId,Name:Name}' --output table
+  --query 'Images[].{Id:ImageId,Name:Name,Checkpoint:Tags[?Key==`Checkpoint`]|[0].Value}' --output table
 
-# Deregister the AMI, then delete its snapshot
+# for each AMI: deregister, then delete its snapshot(s)
 aws ec2 deregister-image --image-id ami-0abc...
 aws ec2 delete-snapshot   --snapshot-id snap-0abc...   # from describe-images BlockDeviceMappings
 ```
+
+Then set the checkpoint's `status` to `retired` (or delete its JSON) so nobody
+tries to deploy it.
+
+The Packer build network (`packer/build-vpc`: VPC, subnet, internet gateway) has
+no hourly cost. Remove it with `cd packer/build-vpc && terraform destroy` if you
+won't bake again.
 
 ---
 

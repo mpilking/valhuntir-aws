@@ -1,6 +1,6 @@
 # Copy to terraform.tfvars and edit. Do not commit terraform.tfvars.
 
-region        = "us-east-1"
+region        = "us-east-1" # must match the checkpoint's region (AMIs are regional)
 name_prefix   = "valhuntir"
 examiner_name = "analyst"
 
@@ -21,10 +21,10 @@ enable_remnux     = true
 # sift_instance_type = "m6i.2xlarge"
 # sift_cases_gb      = 500
 
-# Pre-baked golden AMIs (from ../packer). Leave empty to build from the Ubuntu
-# 24.04 base at first boot (~20-40 min for the cast salt run). Set to skip it.
-# sift_ami   = "ami-0abc...sift"
-# remnux_ami = "ami-0def...remnux"
+# Which software to deploy (required): a checkpoint in ../checkpoints/<name>.json
+# (tested, baked AMIs; boots in minutes) or "latest" (newest upstream versions
+# installed at boot; slow and may fail — for trying upgrades).
+checkpoint = "2026-07-12"
 
 # Chain of custody
 object_lock_mode           = "GOVERNANCE" # or COMPLIANCE for immutability
