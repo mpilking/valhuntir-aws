@@ -55,21 +55,29 @@ try {
   Update-Path
 
   # --- 1. Wait for SIFT to publish the join code (SIFT may still be booting) ---
-  $code = $null
+  $join = $null
   for ($i = 0; $i -lt 360; $i++) {   # up to 3 h (checkpoint=latest SIFT installs take ~1.5 h)
     try {
       $v = (Get-SSMParameter -Name $CodeParam -WithDecryption $true -Region $Region).Value
-      if ($v -and $v -ne "pending") { $code = $v; break }
+      if ($v -and $v -ne "pending") { $join = $v | ConvertFrom-Json; break }
     } catch { Write-Output "waiting for join code: $_" }
     Start-Sleep -Seconds 30
   }
-  if (-not $code) { throw "no join code from SIFT after 3 h" }
+  if (-not $join.code) { throw "no join code from SIFT after 3 h" }
+
+  # Trust this deployment's gateway CA (generated on SIFT at its first boot), so
+  # setup-windows.ps1's HTTPS health check and join call verify the gateway.
+  $caFile = "C:\ProgramData\valhuntir\sift-gateway-ca.pem"
+  Set-Content -Path $caFile -Value $join.ca_cert -Encoding ASCII
+  Import-Certificate -FilePath $caFile -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
 
   # --- 2. Upstream unattended install + join ------------------------------------
   # No -StaticIP: on EC2 the address is fixed by Terraform, and the NIC must stay DHCP.
+  # Its console output is piped through so it lands in this transcript.
   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Wintools "scripts\setup-windows.ps1") `
     -NonInteractive -AcknowledgeSecurityHole -InstallDir $Install -Examiner $Examiner `
-    -BindAddress 0.0.0.0 -Port 4624 -GatewayHost $SiftIp -GatewayPort 4508 -JoinCode $code
+    -BindAddress 0.0.0.0 -Port 4624 -GatewayHost $SiftIp -GatewayPort 4508 -JoinCode $join.code *>&1 |
+    ForEach-Object { "$_" }
   if ($LASTEXITCODE -ne 0) { throw "setup-windows.ps1 failed ($LASTEXITCODE)" }
 
   # --- 3. Firewall: wintools-mcp only from SIFT ---------------------------------

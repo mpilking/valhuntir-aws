@@ -90,6 +90,18 @@ resource "aws_security_group_rule" "sift_gateway_from_windows" {
   source_security_group_id = aws_security_group.windows[0].id
 }
 
+# setup-windows.ps1 pings SIFT before joining and skips the join if ICMP fails.
+resource "aws_security_group_rule" "sift_ping_from_windows" {
+  count                    = var.enable_windows ? 1 : 0
+  type                     = "ingress"
+  description              = "ICMP echo from Windows worker (installer reachability check)"
+  from_port                = 8
+  to_port                  = 0
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.sift.id
+  source_security_group_id = aws_security_group.windows[0].id
+}
+
 ###############################################################################
 # OpenSearch data store
 ###############################################################################

@@ -98,7 +98,8 @@ write_files:
   # Windows join hand-off (upstream `vhir setup join-code` flow, unattended):
   # mint a one-time code from the gateway, configure the Samba case share with
   # upstream's own code (it reads the Windows IP from stdin), and publish the code
-  # for the Windows host. Re-run to re-join a replaced Windows host.
+  # plus this gateway's CA cert (Windows trusts it, so the installer's HTTPS
+  # checks verify properly). Re-run to re-join a replaced Windows host.
   - path: /usr/local/sbin/vhir-publish-join-code.sh
     permissions: "0750"
     owner: root:root
@@ -113,8 +114,9 @@ write_files:
       [ -n "$CODE" ] || { echo "ERROR: gateway returned no join code" >&2; exit 1; }
       echo "$WIN_IP" | sudo -u "$SIFT_USER" HOME="$H" "$H/.vhir/venv/bin/python" -c \
         'import sys; from vhir_cli.commands.join import _setup_samba_share as s; s(sys.argv[1])' "$CODE"
+      VALUE=$(jq -nc --arg code "$CODE" --rawfile ca "$H/.vhir/tls/ca-cert.pem" '{code: $code, ca_cert: $ca}')
       aws --region "${region}" ssm put-parameter --name "${join_code_param}" --type SecureString \
-        --key-id "${kms_key_arn}" --overwrite --value "$CODE" >/dev/null
+        --key-id "${kms_key_arn}" --overwrite --value "$VALUE" >/dev/null
       echo "join code published for Windows host $WIN_IP"
 
   - path: /usr/local/sbin/valhuntir-firstboot.sh
