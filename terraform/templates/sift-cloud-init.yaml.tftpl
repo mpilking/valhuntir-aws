@@ -168,7 +168,8 @@ write_files:
       echo "== 2. Heavy install (checkpoint=latest) — apt, cast SIFT, sift-mcp"
       SIFT_USER="$SIFT_USER" CAST_VER="${pins.cast}" SIFT_MODE="${sift_mode}" \
         SIFT_SALTSTACK_VERSION="${pins.sift_saltstack}" SIFT_MCP_REF="${pins.sift_mcp}" \
-        VALHUNTIR_REF="${pins.valhuntir}" AWSCLI_VERSION="${pins.awscli}" \
+        VALHUNTIR_REF="${pins.valhuntir}" OPENSEARCH_MCP_REF="${pins.opensearch_mcp}" \
+        AWSCLI_VERSION="${pins.awscli}" \
         PYPI_EXCLUDE_NEWER="${pins.pypi_exclude_newer}" \
         /usr/local/sbin/install-sift.sh
       %{ endif ~}
