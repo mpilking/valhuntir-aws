@@ -1,0 +1,72 @@
+#cloud-config
+# REMnux worker first-boot configuration.
+#
+# The heavy install (cast REMnux salt run + Node remnux-mcp) lives in
+# install-remnux.sh, embedded below. When 'baked' is false it runs here at first
+# boot; when true the AMI already contains it (built by Packer from the same
+# script) and this document only writes the token env + enables the service.
+
+write_files:
+  # systemd unit for the remnux-mcp HTTP server. The bootstrap creates
+  # /etc/remnux-mcp.env and enables the unit.
+  - path: /etc/systemd/system/remnux-mcp.service
+    permissions: "0644"
+    owner: root:root
+    content: |
+      [Unit]
+      Description=REMnux MCP server (HTTP)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=${remnux_user}
+      EnvironmentFile=/etc/remnux-mcp.env
+      ExecStart=/usr/bin/remnux-mcp-server --mode=local --transport=http --http-host=0.0.0.0 --http-port=3000
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # The heavy install script (single-sourced with Packer). Only executed here
+  # when not baked.
+  - path: /usr/local/sbin/install-remnux.sh
+    permissions: "0755"
+    owner: root:root
+    encoding: gz+b64
+    content: ${install_script_b64}
+
+  - path: /usr/local/sbin/remnux-firstboot.sh
+    permissions: "0750"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+      exec > /var/log/remnux-firstboot.log 2>&1
+
+      REGION="${region}"
+      SECRET_ARN="${secret_arn}"
+      REMNUX_USER="${remnux_user}"
+
+      %{ if !baked ~}
+      # --- 1. Heavy install (not baked) — cast REMnux + remnux-mcp ----------
+      REMNUX_USER="$REMNUX_USER" CAST_VER="${cast_version}" REMNUX_MODE="${remnux_mode}" \
+        /usr/local/sbin/install-remnux.sh
+      %{ endif ~}
+
+      # --- 2. Shared HTTP token from Secrets Manager ------------------------
+      SECRET=$(aws --region "$REGION" secretsmanager get-secret-value \
+        --secret-id "$SECRET_ARN" --query SecretString --output text)
+      MCP_TOKEN=$(echo "$SECRET" | jq -r .remnux_mcp_token)
+      install -m 0640 -o root -g "$REMNUX_USER" /dev/null /etc/remnux-mcp.env
+      echo "MCP_TOKEN=$MCP_TOKEN" > /etc/remnux-mcp.env
+
+      # --- 3. Enable the service --------------------------------------------
+      systemctl daemon-reload
+      systemctl enable --now remnux-mcp.service
+
+      echo "remnux-firstboot complete"
+
+runcmd:
+  - /usr/local/sbin/remnux-firstboot.sh

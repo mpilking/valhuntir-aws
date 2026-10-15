@@ -1,0 +1,31 @@
+# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars.
+
+region        = "us-east-1"
+name_prefix   = "valhuntir"
+examiner_name = "analyst"
+
+# Your workstation's public IP, /32. Find it: curl -s https://checkip.amazonaws.com
+# Leave empty to allow NO SSH ingress and rely solely on SSM Session Manager.
+allowed_admin_cidrs = ["203.0.113.4/32"]
+
+# Contents of your SSH public key (e.g. cat ~/.ssh/id_ed25519.pub).
+# Leave empty to skip the key pair (SSM-only access).
+ssh_public_key = "ssh-ed25519 AAAA... you@host"
+
+# Component toggles — set false to save cost on unused workers.
+enable_opensearch = true
+enable_windows    = true
+enable_remnux     = true
+
+# Sizing overrides (defaults are in variables.tf)
+# sift_instance_type = "m6i.2xlarge"
+# sift_cases_gb      = 500
+
+# Pre-baked golden AMIs (from ../packer). Leave empty to build from the Ubuntu
+# 24.04 base at first boot (~20-40 min for the cast salt run). Set to skip it.
+# sift_ami   = "ami-0abc...sift"
+# remnux_ami = "ami-0def...remnux"
+
+# Chain of custody
+object_lock_mode           = "GOVERNANCE" # or COMPLIANCE for immutability
+object_lock_retention_days = 365

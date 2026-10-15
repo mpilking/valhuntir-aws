@@ -1,0 +1,83 @@
+#cloud-config
+# OpenSearch data store (dedicated host). opensearch-mcp on the SIFT box
+# connects here over the private network on :9200.
+
+package_update: true
+packages:
+  - jq
+  - unzip
+  - apt-transport-https
+  - ca-certificates
+  - curl
+
+write_files:
+  - path: /usr/local/sbin/opensearch-bootstrap.sh
+    permissions: "0750"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+      exec > /var/log/opensearch-bootstrap.log 2>&1
+
+      REGION="${region}"
+      SECRET_ARN="${secret_arn}"
+      DATA_DEV="${data_device}"
+
+      # --- 0. Wait for egress + AWS CLI v2 ----------------------------------
+      # 'awscli' is not an apt package on Ubuntu 24.04; install v2 from bundle.
+      for i in $(seq 1 30); do
+        curl -4 -sS -m 10 -o /dev/null https://archive.ubuntu.com 2>/dev/null && break
+        echo "waiting for egress ($i)..."; sleep 10
+      done
+      if ! command -v aws >/dev/null 2>&1; then
+        curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+        unzip -q -o /tmp/awscliv2.zip -d /tmp && /tmp/aws/install --update
+      fi
+
+      # --- 1. Mount the indices volume (wait for the non-root EBS disk) ------
+      ROOT_DISK=$(lsblk -npo PKNAME "$(findmnt -no SOURCE /)" | head -1)
+      DEV=""
+      for i in $(seq 1 30); do
+        for d in $(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}'); do
+          [ "$d" = "$ROOT_DISK" ] && continue
+          DEV="$d"; break
+        done
+        [ -n "$DEV" ] && break
+        echo "waiting for data volume to attach ($i)..."; sleep 5
+      done
+      mkdir -p /var/lib/opensearch-data
+      if [ -n "$DEV" ]; then
+        blkid "$DEV" || mkfs.ext4 -L osdata "$DEV"
+        grep -q '/var/lib/opensearch-data' /etc/fstab || \
+          echo "LABEL=osdata /var/lib/opensearch-data ext4 defaults,nofail 0 2" >> /etc/fstab
+        mount -a
+      fi
+      # OpenSearch container runs as uid 1000
+      chown -R 1000:1000 /var/lib/opensearch-data
+
+      # --- 2. Docker --------------------------------------------------------
+      curl -fsSL https://get.docker.com | sh
+      sysctl -w vm.max_map_count=262144
+      echo "vm.max_map_count=262144" > /etc/sysctl.d/99-opensearch.conf
+
+      # --- 3. Admin password from secret ------------------------------------
+      SECRET=$(aws --region "$REGION" secretsmanager get-secret-value \
+        --secret-id "$SECRET_ARN" --query SecretString --output text)
+      OS_ADMIN_PW=$(echo "$SECRET" | jq -r .opensearch_admin)
+
+      # --- 4. Run OpenSearch (single node) ----------------------------------
+      # Binds to all interfaces; SG restricts :9200 to the SIFT host only.
+      docker run -d --name opensearch --restart unless-stopped \
+        -p 9200:9200 -p 9600:9600 \
+        -e discovery.type=single-node \
+        -e bootstrap.memory_lock=true \
+        -e "OPENSEARCH_JAVA_OPTS=-Xms6g -Xmx6g" \
+        -e "OPENSEARCH_INITIAL_ADMIN_PASSWORD=$OS_ADMIN_PW" \
+        --ulimit memlock=-1:-1 --ulimit nofile=65536:65536 \
+        -v /var/lib/opensearch-data:/usr/share/opensearch/data \
+        opensearchproject/opensearch:2
+
+      echo "opensearch-bootstrap complete"
+
+runcmd:
+  - /usr/local/sbin/opensearch-bootstrap.sh

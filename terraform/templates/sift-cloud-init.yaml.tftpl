@@ -1,0 +1,201 @@
+#cloud-config
+# SIFT workstation first-boot configuration.
+#
+# The heavy, generic install (apt, XFCE/XRDP, cast SANS SIFT, sift-mcp stack)
+# lives in install-sift.sh, embedded below. When 'baked' is false it runs here
+# at first boot; when true the AMI already contains it (built by Packer from the
+# same script) and this document only applies per-deploy config.
+#
+# Two identities, deliberately separate:
+#   SIFT_USER = OS login account (SANS convention: sansforensics)
+#   EXAMINER  = Valhuntir examiner identity (VHIR_EXAMINER) for audit/finding IDs
+
+write_files:
+  # Evidence pull helper — copies from the WORM bucket over the S3 VPC endpoint.
+  - path: /usr/local/bin/pull-evidence
+    permissions: "0755"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      # Usage: pull-evidence <case-id> [s3-prefix]
+      set -euo pipefail
+      CASE="$1"
+      PREFIX="$${2:-incoming/$1}"
+      DEST="/cases/$CASE/evidence"
+      mkdir -p "$DEST"
+      aws s3 cp --recursive "s3://${evidence_bucket}/$PREFIX" "$DEST/"
+      echo "Fetched. Register chain of custody with:"
+      echo "  vhir evidence register $DEST/*"
+
+  # The heavy install script (single-sourced with Packer). base64 so YAML block
+  # indentation cannot corrupt it. Only executed here when not baked.
+  - path: /usr/local/sbin/install-sift.sh
+    permissions: "0755"
+    owner: root:root
+    encoding: gz+b64
+    content: ${install_script_b64}
+
+  # Per-instance gateway TLS: same layout/parameters as setup-sift.sh --remote,
+  # but run on THIS host so the SAN carries its own IP and the CA key is unique.
+  - path: /usr/local/sbin/vhir-gen-tls.sh
+    permissions: "0755"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      # vhir-gen-tls.sh <tls_dir> <host_ip> <host_name>
+      set -euo pipefail
+      D="$1"; IP="$2"; NAME="$3"
+      mkdir -p "$D"; umask 077
+      SAN="IP:$IP,DNS:$NAME,DNS:localhost,IP:127.0.0.1"
+      openssl genrsa -out "$D/ca-key.pem" 4096 2>/dev/null
+      openssl req -new -x509 -key "$D/ca-key.pem" -out "$D/ca-cert.pem" -days 3650 -subj "/CN=Valhuntir Gateway CA" 2>/dev/null
+      openssl genrsa -out "$D/gateway-key.pem" 2048 2>/dev/null
+      openssl req -new -key "$D/gateway-key.pem" -out "$D/gateway.csr" -subj "/CN=Valhuntir Gateway" -addext "subjectAltName=$SAN" 2>/dev/null
+      openssl x509 -req -in "$D/gateway.csr" -CA "$D/ca-cert.pem" -CAkey "$D/ca-key.pem" -CAcreateserial -out "$D/gateway-cert.pem" -days 365 -copy_extensions copyall 2>/dev/null
+      rm -f "$D/gateway.csr" "$D/ca-cert.srl"
+      chmod 600 "$D/ca-key.pem" "$D/gateway-key.pem"; chmod 644 "$D/ca-cert.pem" "$D/gateway-cert.pem"
+      echo "gateway TLS generated (SAN: $SAN)"
+
+  # Installs the per-instance bearer token. Fails closed: the gateway treats an
+  # empty api_keys map as "auth disabled", so a bad token must stop firstboot.
+  - path: /usr/local/sbin/vhir-set-gateway-token.py
+    permissions: "0755"
+    owner: root:root
+    content: |
+      """vhir-set-gateway-token.py <gateway.yaml> <token> <examiner> <tls_dir>"""
+      import os, re, sys, yaml
+      path, token, examiner, tls_dir = sys.argv[1:5]
+      if not re.fullmatch(r"vhir_gw_[0-9a-f]{24}", token):
+          sys.exit("ERROR: gateway token missing or malformed; refusing to configure the gateway")
+      with open(path) as f:
+          cfg = yaml.safe_load(f) or {}
+      cfg["api_keys"] = {token: {"examiner": examiner, "role": "lead"}}
+      cfg.setdefault("gateway", {})["tls"] = {
+          "certfile": os.path.join(tls_dir, "gateway-cert.pem"),
+          "keyfile": os.path.join(tls_dir, "gateway-key.pem"),
+      }
+      tmp = path + ".tmp"
+      with open(tmp, "w") as f:
+          yaml.safe_dump(cfg, f, sort_keys=False)
+      os.chmod(tmp, 0o600)
+      os.replace(tmp, path)
+      print("gateway token installed for examiner " + repr(examiner))
+
+  - path: /usr/local/sbin/valhuntir-firstboot.sh
+    permissions: "0750"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+      exec > /var/log/valhuntir-firstboot.log 2>&1
+
+      REGION="${region}"
+      SECRET_ARN="${secret_arn}"
+      SIFT_USER="${sift_user}"      # OS login account (sansforensics)
+      EXAMINER="${examiner_name}"   # Valhuntir examiner identity (VHIR_EXAMINER)
+      OPENSEARCH_URL="${opensearch_url}"
+      CASES_DEV="${cases_device}"
+      HOME_DIR="/home/$SIFT_USER"
+
+      # --- 1. Mount the /cases evidence + extractions volume ----------------
+      # The dedicated EBS volume may attach a moment after boot, and Nitro device
+      # names are non-deterministic ($CASES_DEV=/dev/xvdf often appears as
+      # /dev/nvmeXn1). Wait for a non-root whole-disk to appear, then use it.
+      ROOT_DISK=$(lsblk -npo PKNAME "$(findmnt -no SOURCE /)" | head -1)
+      DEV=""
+      for i in $(seq 1 30); do
+        for d in $(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}'); do
+          [ "$d" = "$ROOT_DISK" ] && continue
+          DEV="$d"; break
+        done
+        [ -n "$DEV" ] && break
+        echo "waiting for /cases volume to attach ($i)..."; sleep 5
+      done
+      mkdir -p /cases
+      if [ -n "$DEV" ]; then
+        blkid "$DEV" || mkfs.ext4 -L cases "$DEV"
+        grep -q '/cases' /etc/fstab || echo "LABEL=cases /cases ext4 defaults,nofail 0 2" >> /etc/fstab
+        mount -a
+      else
+        echo "WARN: no dedicated /cases volume found; /cases stays on the root disk"
+      fi
+
+      %{ if !baked ~}
+      # --- 2. Heavy install (not baked) — apt, cast SIFT, sift-mcp stack ----
+      SIFT_USER="$SIFT_USER" CAST_VER="${cast_version}" SIFT_MODE="${sift_mode}" \
+        SIFT_SALTSTACK_VERSION="${sift_saltstack_ver}" SIFT_MCP_REF="${sift_mcp_ref}" \
+        VALHUNTIR_REF="${valhuntir_ref}" AWSCLI_VERSION="${awscli_version}" \
+        PYPI_EXCLUDE_NEWER="${pypi_exclude_newer}" \
+        /usr/local/sbin/install-sift.sh
+      %{ endif ~}
+
+      # --- 3. Fetch generated credentials -----------------------------------
+      SECRET=$(aws --region "$REGION" secretsmanager get-secret-value \
+        --secret-id "$SECRET_ARN" --query SecretString --output text)
+      LOGIN_PW=$(echo "$SECRET" | jq -r .examiner_password)
+      OS_ADMIN_PW=$(echo "$SECRET" | jq -r .opensearch_admin)
+
+      # --- 4. Apply the sansforensics login password + case-dir ownership ---
+      echo "$SIFT_USER:$LOGIN_PW" | chpasswd
+      chown "$SIFT_USER":"$SIFT_USER" /cases
+      adduser xrdp ssl-cert || true
+      systemctl enable --now xrdp || true
+
+      # --- 5. Examiner identity + opensearch backend config -----------------
+      install -o "$SIFT_USER" -g "$SIFT_USER" -d "$HOME_DIR/.vhir"
+      # VHIR_EXAMINER (env) has priority over the OS username in identity
+      # resolution, so this overrides whatever was baked in.
+      if ! grep -q 'VHIR_EXAMINER' "$HOME_DIR/.bashrc" 2>/dev/null; then
+        echo "export VHIR_EXAMINER=$EXAMINER" >> "$HOME_DIR/.bashrc"
+      fi
+      if [ -n "$OPENSEARCH_URL" ]; then
+        # TODO(verify): exact env/config the opensearch-mcp backend reads.
+        {
+          echo "OPENSEARCH_URL=$OPENSEARCH_URL"
+          echo "OPENSEARCH_USER=admin"
+          echo "OPENSEARCH_PASSWORD=$OS_ADMIN_PW"
+          echo "OPENSEARCH_VERIFY_CERTS=false"
+        } > "$HOME_DIR/.vhir/env"
+      fi
+      chown -R "$SIFT_USER":"$SIFT_USER" "$HOME_DIR/.vhir"
+
+      # --- 6. Per-instance gateway TLS + bearer token (fail closed) ---------
+      # Baked AMIs ship with neither (removed by scrub-sift.sh); a from-base
+      # install already has a cert setup-sift.sh made for this host, so the cert
+      # is generated only if absent. The token always comes from Secrets Manager
+      # and is mapped to the examiner identity (not the OS login).
+      GW_TOKEN=$(echo "$SECRET" | jq -r .gateway_api_key)
+      TLS_DIR="$HOME_DIR/.vhir/tls"
+      if [ ! -f "$TLS_DIR/gateway-cert.pem" ]; then
+        sudo -u "$SIFT_USER" /usr/local/sbin/vhir-gen-tls.sh "$TLS_DIR" \
+          "$(hostname -I | awk '{print $1}')" "$(hostname)"
+      fi
+      sudo -u "$SIFT_USER" "$HOME_DIR/.vhir/venv/bin/python" /usr/local/sbin/vhir-set-gateway-token.py \
+        "$HOME_DIR/.vhir/gateway.yaml" "$GW_TOKEN" "$EXAMINER" "$TLS_DIR"
+
+      # --- 7. Start the gateway (persistent per-user service 'vhir-gateway') --
+      # Only reached once the token is in place (set -e stops us otherwise).
+      loginctl enable-linger "$SIFT_USER" || true
+      RUNTIME_DIR="/run/user/$(id -u "$SIFT_USER")"
+      run_user_systemctl() {
+        sudo -u "$SIFT_USER" XDG_RUNTIME_DIR="$RUNTIME_DIR" systemctl --user "$@"
+      }
+      # setup-sift.sh writes Environment=VHIR_EXAMINER=<os user> into the unit;
+      # a drop-in overrides it with the examiner identity (survives reinstalls).
+      DROPIN="$HOME_DIR/.config/systemd/user/vhir-gateway.service.d"
+      install -d -o "$SIFT_USER" -g "$SIFT_USER" "$DROPIN"
+      printf '[Service]\nEnvironment=VHIR_EXAMINER=%s\n' "$EXAMINER" > "$DROPIN/examiner.conf"
+      chown "$SIFT_USER":"$SIFT_USER" "$DROPIN/examiner.conf"
+      run_user_systemctl daemon-reload 2>/dev/null || true
+      run_user_systemctl enable vhir-gateway
+      run_user_systemctl restart vhir-gateway
+      for i in $(seq 1 30); do
+        curl -sk -o /dev/null -m 5 https://127.0.0.1:4508/health && break; sleep 2
+      done
+      curl -sk -o /dev/null -m 5 https://127.0.0.1:4508/health \
+        || { echo "ERROR: gateway did not become healthy" >&2; exit 1; }
+
+      echo "valhuntir-firstboot complete"
+
+runcmd:
+  - /usr/local/sbin/valhuntir-firstboot.sh

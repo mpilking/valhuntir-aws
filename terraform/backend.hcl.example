@@ -1,0 +1,8 @@
+# Copy to backend.hcl (filled from the bootstrap module's `backend_hcl` output),
+# then: terraform init -backend-config=backend.hcl
+# Do not commit backend.hcl if the bucket name is sensitive.
+bucket       = "valhuntir-tfstate-CHANGEME"
+key          = "valhuntir/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true

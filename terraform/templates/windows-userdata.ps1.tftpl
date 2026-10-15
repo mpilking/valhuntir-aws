@@ -1,0 +1,69 @@
+<powershell>
+# Windows wintools-mcp bootstrap.
+#   - installs wintools-mcp (serves :4624, reached from the SIFT host)
+#   - stores SIFT case-dir SMB credentials for the service account
+# Repo-specific steps to reconcile on first real run are marked TODO(verify).
+
+Start-Transcript -Path C:\valhuntir-bootstrap.log -Append
+$ErrorActionPreference = "Continue"
+
+$Region    = "${region}"
+$SecretArn = "${secret_arn}"
+$SiftIp    = "${sift_ip}"
+$SiftUser  = "${sift_user}"       # SIFT OS/Samba account (sansforensics)
+$Examiner  = "${examiner_name}"   # Valhuntir examiner identity slug
+
+# --- 1. Fetch the SIFT login password for the SMB mount ---------------------
+# The EC2 instance profile grants secretsmanager:GetSecretValue. AWS Tools for
+# PowerShell ships on the Windows Server AMI. The case-dir Samba share maps to
+# the SIFT OS user, so we authenticate as $SiftUser.
+try {
+  $secretJson = (Get-SECSecretValue -SecretId $SecretArn -Region $Region).SecretString
+  $secret     = $secretJson | ConvertFrom-Json
+  $siftPw     = $secret.examiner_password
+} catch {
+  Write-Output "WARN: could not read secret: $_"
+}
+
+# --- 2. Prerequisites: Python 3.10+ and Git via Chocolatey ------------------
+Set-ExecutionPolicy Bypass -Scope Process -Force
+[System.Net.ServicePointManager]::SecurityProtocol = 3072
+Invoke-WebRequest -UseBasicParsing https://community.chocolatey.org/install.ps1 | Invoke-Expression
+choco install -y git python312
+$env:Path += ";C:\Program Files\Git\cmd"
+
+# --- 3. Store SIFT SMB credentials for the service account ------------------
+# The wintools-mcp service reaches the case dir at \\$SiftIp\... over SMB. Store
+# the credential for the LocalSystem service account so the UNC path resolves
+# without an interactive mapped drive. TODO(verify) the exact share name that
+# setup-sift.sh --remote publishes.
+if ($SiftUser -and $siftPw) {
+  cmdkey /add:$SiftIp /user:$SiftUser /pass:$siftPw
+}
+
+# --- 4. Install wintools-mcp ------------------------------------------------
+# Unattended: -NonInteractive requires -AcknowledgeSecurityHole. Bind 0.0.0.0 so
+# the SIFT host can reach :4624; the installer generates a vhir_wt_ bearer token.
+git clone https://github.com/AppliedIR/wintools-mcp.git C:\wintools-mcp
+Push-Location C:\wintools-mcp
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 `
+  -NonInteractive -AcknowledgeSecurityHole `
+  -BindAddress 0.0.0.0 -Port 4624 `
+  -Examiner $Examiner -StaticIP (Get-NetIPAddress -AddressFamily IPv4 `
+    -PrefixOrigin Dhcp,Manual | Select-Object -First 1 -ExpandProperty IPAddress)
+Pop-Location
+
+# --- 5. Firewall: allow :4624 from the SIFT host only -----------------------
+New-NetFirewallRule -DisplayName "wintools-mcp 4624 from SIFT" -Direction Inbound `
+  -Protocol TCP -LocalPort 4624 -RemoteAddress $SiftIp -Action Allow
+
+# --- 6. Client wiring (manual/one-time) -------------------------------------
+# setup-windows.ps1 generates the bearer token during install (no fixed-token
+# flag exists). To let the SIFT LLM client reach wintools-mcp, retrieve the
+# token on this host and register it on SIFT:
+#   vhir setup client --windows=$SiftIp-facing-IP:4624   (paste the token)
+# TODO(verify): the installer's on-disk token location (under C:\Tools\vhir).
+
+Stop-Transcript
+</powershell>
+<persist>true</persist>

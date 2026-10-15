@@ -1,0 +1,9 @@
+# Packer build outputs (AMI ids are recorded in checkpoints/*.json instead)
+packer/manifest-*.json
+packer_cache/
+crash.log
+
+# Terraform state/secrets anywhere (bootstrap/ uses local state)
+*.tfstate
+*.tfstate.*
+.terraform/
