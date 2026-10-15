@@ -23,10 +23,10 @@ gh_latest_tag() {  # github.com/<repo>/releases/latest redirects to .../tag/<tag
   echo "${u##*/}"
 }
 gh_head() { git ls-remote "https://github.com/$1.git" HEAD | cut -f1; }
-python_latest() {  # newest python.org release that ships a Windows amd64 installer
+python_latest() {  # newest 3.12.x (setup-windows.ps1's recommended series) with a Windows installer
   local v
-  for v in $(curl -fsSL https://www.python.org/ftp/python/ | grep -oE 'href="3\.[0-9]+\.[0-9]+/"' \
-               | grep -oE '3\.[0-9]+\.[0-9]+' | sort -Vr | head -15); do
+  for v in $(curl -fsSL https://www.python.org/ftp/python/ | grep -oE 'href="3\.12\.[0-9]+/"' \
+               | grep -oE '3\.12\.[0-9]+' | sort -Vr | head -15); do
     curl -fsI -o /dev/null "https://www.python.org/ftp/python/$v/python-$v-amd64.exe" && { echo "$v"; return; }
   done
 }
