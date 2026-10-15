@@ -1,7 +1,7 @@
 {
   "name": "2026-07-12",
   "status": "candidate",
-  "description": "Every component at the version current on 2026-07-12 19:00 UTC \u2014 the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
+  "description": "Every component at the version current on 2026-07-12 19:00 UTC — the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
   "region": "us-east-1",
   "validated_on": "",
   "iac_commit": "",
@@ -31,9 +31,9 @@
   },
   "amis": {
     "sift": "ami-0e21d4f2479b872cb",
-    "remnux": "",
+    "remnux": "ami-0fea0e3fa293bde19",
     "opensearch": "ami-0153f27e4ac4bc109",
-    "windows": ""
+    "windows": "ami-0c2d3cd87b8c50006"
   },
   "notes": [
     "ubuntu_ami is Canonical's noble 20260626 build, the one SIFT was validated on in July.",
