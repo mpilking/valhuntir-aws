@@ -55,6 +55,9 @@ resource "aws_instance" "bastion" {
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["bastion"].name
 
+  # A changed first-boot script must run, and it only runs on a new instance.
+  user_data_replace_on_change = true
+
   metadata_options {
     http_tokens = "required" # IMDSv2
   }
@@ -100,6 +103,9 @@ resource "aws_instance" "opensearch" {
   vpc_security_group_ids = [aws_security_group.opensearch[0].id]
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["opensearch"].name
+
+  # A changed first-boot script must run, and it only runs on a new instance.
+  user_data_replace_on_change = true
 
   metadata_options {
     http_tokens = "required"
@@ -162,6 +168,9 @@ resource "aws_instance" "sift" {
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["sift"].name
 
+  # A changed first-boot script must run, and it only runs on a new instance.
+  user_data_replace_on_change = true
+
   metadata_options {
     http_tokens = "required"
   }
@@ -221,6 +230,9 @@ resource "aws_instance" "remnux" {
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["remnux"].name
 
+  # A changed first-boot script must run, and it only runs on a new instance.
+  user_data_replace_on_change = true
+
   metadata_options {
     http_tokens = "required"
   }
@@ -268,6 +280,9 @@ resource "aws_instance" "windows" {
   key_name               = local.key_name
   iam_instance_profile   = aws_iam_instance_profile.host["windows"].name
   get_password_data      = var.ssh_public_key != ""
+
+  # A changed first-boot script must run, and it only runs on a new instance.
+  user_data_replace_on_change = true
 
   metadata_options {
     http_tokens = "required"

@@ -122,8 +122,12 @@ write_files:
     owner: root:root
     content: |
       #!/usr/bin/env bash
-      set -euxo pipefail
+      # No xtrace: this script handles secrets. Log is root-only; failures name
+      # the line and the (unexpanded) command.
+      set -euo pipefail
+      install -m 600 /dev/null /var/log/valhuntir-firstboot.log
       exec > /var/log/valhuntir-firstboot.log 2>&1
+      trap 'echo "ERROR: line $LINENO: $BASH_COMMAND" >&2' ERR
 
       REGION="${region}"
       SECRET_ARN="${secret_arn}"
@@ -136,6 +140,7 @@ write_files:
       HOME_DIR="/home/$SIFT_USER"
 
       # --- 1. Mount the /cases evidence + extractions volume ----------------
+      echo "== 1. Mount the /cases evidence + extractions volume"
       # The dedicated EBS volume may attach a moment after boot, and Nitro device
       # names are non-deterministic ($CASES_DEV=/dev/xvdf often appears as
       # /dev/nvmeXn1). Wait for a non-root whole-disk to appear, then use it.
@@ -160,6 +165,7 @@ write_files:
 
       %{ if !baked ~}
       # --- 2. Heavy install (checkpoint=latest) — apt, cast SIFT, sift-mcp ----
+      echo "== 2. Heavy install (checkpoint=latest) — apt, cast SIFT, sift-mcp"
       SIFT_USER="$SIFT_USER" CAST_VER="${pins.cast}" SIFT_MODE="${sift_mode}" \
         SIFT_SALTSTACK_VERSION="${pins.sift_saltstack}" SIFT_MCP_REF="${pins.sift_mcp}" \
         VALHUNTIR_REF="${pins.valhuntir}" AWSCLI_VERSION="${pins.awscli}" \
@@ -168,6 +174,7 @@ write_files:
       %{ endif ~}
 
       # --- 3. Fetch generated credentials -----------------------------------
+      echo "== 3. Fetch generated credentials"
       SECRET=$(aws --region "$REGION" secretsmanager get-secret-value \
         --secret-id "$SECRET_ARN" --query SecretString --output text)
       LOGIN_PW=$(echo "$SECRET" | jq -r .examiner_password)
@@ -175,12 +182,14 @@ write_files:
       REMNUX_TOKEN=$(echo "$SECRET" | jq -r .remnux_mcp_token)
 
       # --- 4. Apply the sansforensics login password + case-dir ownership ---
+      echo "== 4. Apply the sansforensics login password + case-dir ownership"
       echo "$SIFT_USER:$LOGIN_PW" | chpasswd
       chown "$SIFT_USER":"$SIFT_USER" /cases
       adduser xrdp ssl-cert || true
       systemctl enable --now xrdp || true
 
       # --- 5. Examiner identity + opensearch backend config -----------------
+      echo "== 5. Examiner identity + opensearch backend config"
       install -o "$SIFT_USER" -g "$SIFT_USER" -d "$HOME_DIR/.vhir"
       # VHIR_EXAMINER (env) has priority over the OS username in identity
       # resolution, so this overrides whatever was baked in.
@@ -199,6 +208,7 @@ write_files:
       chown -R "$SIFT_USER":"$SIFT_USER" "$HOME_DIR/.vhir"
 
       # --- 6. Per-instance gateway TLS, bearer token, worker backends -------
+      echo "== 6. Per-instance gateway TLS, bearer token, worker backends"
       # Baked AMIs ship with neither (removed by scrub-sift.sh); a from-base
       # install already has a cert setup-sift.sh made for this host, so the cert
       # is generated only if absent. The token always comes from Secrets Manager
@@ -214,6 +224,7 @@ write_files:
         "$REMNUX_URL" "$REMNUX_TOKEN" "$OS_CFG"
 
       # --- 7. Start the gateway (persistent per-user service 'vhir-gateway') --
+      echo "== 7. Start the gateway (persistent per-user service 'vhir-gateway')"
       # Only reached once the token is in place (set -e stops us otherwise).
       loginctl enable-linger "$SIFT_USER" || true
       RUNTIME_DIR="/run/user/$(id -u "$SIFT_USER")"
@@ -236,6 +247,7 @@ write_files:
         || { echo "ERROR: gateway did not become healthy" >&2; exit 1; }
 
       # --- 8. Windows worker: publish a join code (it registers itself) ------
+      echo "== 8. Windows worker: publish a join code (it registers itself)"
       if [ -n "$WINDOWS_IP" ]; then
         /usr/local/sbin/vhir-publish-join-code.sh
       fi

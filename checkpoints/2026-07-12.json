@@ -13,7 +13,7 @@
   },
   "pins": {
     "ubuntu_ami": "ami-0a02a779008fa3b99",
-    "windows_base_ami": "",
+    "windows_base_ami": "ami-0ed0165f19a049904",
     "awscli": "2.35.21",
     "cast": "v1.0.22",
     "sift_saltstack": "v2026.04.21",
@@ -37,7 +37,7 @@
   },
   "notes": [
     "ubuntu_ami is Canonical's noble 20260626 build, the one SIFT was validated on in July.",
-    "windows_base_ami is the Windows Server 2022 base AMI current at bake time: AWS deregisters old Windows AMIs, so July's is no longer available. The baked Windows AMI preserves the exact OS.",
+    "windows_base_ami is Windows_Server-2022-English-Full-Base-2026.07.15, the oldest still available when this checkpoint was baked (AWS had already deregistered the June image current on 2026-07-12). The baked Windows AMI preserves the exact OS from here on.",
     "OpenSearch 3.5.0 comes from opensearch-mcp's docker-compose.yml at the pinned commit; Docker Hub rebuilds tags monthly, so the exact image digest is recorded in /etc/valhuntir/versions/opensearch on the baked AMI."
   ]
 }

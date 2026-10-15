@@ -37,30 +37,9 @@ resource "aws_security_group" "sift" {
   description = "SIFT workstation."
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    description     = "SSH from bastion"
-    from_port       = 22
-    to_port         = 22
-    protocol        = "tcp"
-    security_groups = [aws_security_group.bastion.id]
-  }
-
-  ingress {
-    description     = "XRDP from bastion (tunneled)"
-    from_port       = 3389
-    to_port         = 3389
-    protocol        = "tcp"
-    security_groups = [aws_security_group.bastion.id]
-  }
-
-  ingress {
-    description     = "sift-gateway / Examiner Portal from bastion (tunneled)"
-    from_port       = 4508
-    to_port         = 4508
-    protocol        = "tcp"
-    security_groups = [aws_security_group.bastion.id]
-  }
-
+  # Ingress is managed only by the separate rule resources below: the Windows
+  # rules must be separate (the two groups reference each other), and Terraform
+  # strips separate rules from a group that also declares inline ingress.
   egress {
     from_port   = 0
     to_port     = 0
@@ -69,6 +48,21 @@ resource "aws_security_group" "sift" {
   }
 
   tags = { Name = "${var.name_prefix}-sift-sg" }
+}
+
+resource "aws_security_group_rule" "sift_from_bastion" {
+  for_each = {
+    "SSH from bastion"                                       = 22
+    "XRDP from bastion (tunneled)"                           = 3389
+    "sift-gateway / Examiner Portal from bastion (tunneled)" = 4508
+  }
+  type                     = "ingress"
+  description              = each.key
+  from_port                = each.value
+  to_port                  = each.value
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.sift.id
+  source_security_group_id = aws_security_group.bastion.id
 }
 
 # SMB from the Windows worker to the SIFT case dir. Separate rule to avoid a

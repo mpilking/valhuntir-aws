@@ -5,9 +5,9 @@
 # The node is deployed with upstream's own tooling (AppliedIR/opensearch-mcp:
 # docker-compose.yml + scripts/setup-opensearch.sh), so it gets the exact
 # OpenSearch version, cluster settings, GeoIP pipeline and Security Analytics
-# setup that sift-mcp is tested against. Two local adjustments, via the compose
-# override file: listen on the private IP (upstream binds 127.0.0.1 because it
-# normally runs on SIFT itself), and keep indices on the dedicated EBS volume.
+# setup that sift-mcp is tested against. Two local adjustments to its compose
+# file: listen on the private IP (upstream binds 127.0.0.1 because it normally
+# runs on SIFT itself), and keep indices on the dedicated EBS volume.
 
 write_files:
 %{ if !baked ~}
@@ -24,8 +24,12 @@ write_files:
     owner: root:root
     content: |
       #!/usr/bin/env bash
-      set -euxo pipefail
+      # No xtrace: this script handles secrets. Log is root-only; failures name
+      # the line and the (unexpanded) command.
+      set -euo pipefail
+      install -m 600 /dev/null /var/log/opensearch-firstboot.log
       exec > /var/log/opensearch-firstboot.log 2>&1
+      trap 'echo "ERROR: line $LINENO: $BASH_COMMAND" >&2' ERR
       export HOME=/root
       REGION="${region}"
       SECRET_ARN="${secret_arn}"
@@ -33,11 +37,13 @@ write_files:
 
       %{ if !baked ~}
       # --- 0. Install (checkpoint=latest) ------------------------------------
+      echo "== 0. Install (checkpoint=latest)"
       OPENSEARCH_MCP_REF="${pins.opensearch_mcp}" DOCKER_VERSION="${pins.docker}" \
         AWSCLI_VERSION="${pins.awscli}" /usr/local/sbin/install-opensearch.sh
       %{ endif ~}
 
       # --- 1. Mount the indices volume (wait for the non-root EBS disk) ------
+      echo "== 1. Mount the indices volume (wait for the non-root EBS disk)"
       ROOT_DISK=$(lsblk -npo PKNAME "$(findmnt -no SOURCE /)" | head -1)
       DEV=""
       for i in $(seq 1 30); do
@@ -56,19 +62,28 @@ write_files:
       mount -a
       chown 1000:1000 /var/lib/opensearch-data   # uid of opensearch in the image
 
-      # --- 2. Compose override: private-IP listener + data on the EBS volume --
-      # (keeps upstream's snapshot mount, which setup-opensearch.sh checks for)
-      cat > "$SRC/docker/docker-compose.override.yml" <<'EOF'
-      services:
-        opensearch:
-          ports: !override
-            - "9200:9200"
-          volumes: !override
-            - /var/lib/opensearch-data:/usr/share/opensearch/data
-            - /var/lib/vhir/snapshots:/usr/share/opensearch/snapshots
-      EOF
+      # --- 2. Compose: listen on the private IP, data on the EBS volume -------
+      echo "== 2. Compose: listen on the private IP, data on the EBS volume"
+      # setup-opensearch.sh runs `docker compose -f docker-compose.yml`, and an
+      # explicit -f makes compose ignore docker-compose.override.yml, so patch the
+      # (pinned) compose file itself. Fails if upstream changed its layout.
+      mkdir -p /var/lib/vhir/snapshots && chown 1000:1000 /var/lib/vhir/snapshots
+      python3 - "$SRC/docker/docker-compose.yml" <<'PY'
+      import sys, yaml
+      path = sys.argv[1]
+      cfg = yaml.safe_load(open(path))
+      svc = cfg["services"]["opensearch"]
+      assert any(str(p).endswith("9200:9200") for p in svc["ports"]), svc["ports"]
+      svc["ports"] = ["9200:9200"]
+      svc["volumes"] = ["/var/lib/opensearch-data:/usr/share/opensearch/data",
+                        "/var/lib/vhir/snapshots:/usr/share/opensearch/snapshots"]
+      cfg.pop("volumes", None)
+      yaml.safe_dump(cfg, open(path, "w"), sort_keys=False)
+      print("compose patched:", svc["ports"], svc["volumes"])
+      PY
 
       # --- 3. Admin password from Secrets Manager -----------------------------
+      echo "== 3. Admin password from Secrets Manager"
       # setup-opensearch.sh uses an existing ~/.vhir/opensearch.yaml as-is.
       OS_PW=$(aws --region "$REGION" secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
         --query SecretString --output text | jq -r .opensearch_admin)
@@ -78,9 +93,11 @@ write_files:
         > /root/.vhir/opensearch.yaml
 
       # --- 4. Upstream setup: start node, cluster settings, GeoIP, analytics ---
+      echo "== 4. Upstream setup: start node, cluster settings, GeoIP, analytics"
       bash "$SRC/scripts/setup-opensearch.sh" < /dev/null
 
       # --- 5. Health on the private interface (what SIFT will use) ------------
+      echo "== 5. Health on the private interface (what SIFT will use)"
       IP=$(hostname -I | awk '{print $1}')
       curl -sfk -m 10 -u "admin:$OS_PW" "https://$IP:9200/_cluster/health" \
         || { echo "ERROR: OpenSearch not reachable on $IP:9200" >&2; exit 1; }

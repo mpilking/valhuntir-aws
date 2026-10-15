@@ -44,8 +44,12 @@ write_files:
     owner: root:root
     content: |
       #!/usr/bin/env bash
-      set -euxo pipefail
+      # No xtrace: this script handles secrets. Log is root-only; failures name
+      # the line and the (unexpanded) command.
+      set -euo pipefail
+      install -m 600 /dev/null /var/log/remnux-firstboot.log
       exec > /var/log/remnux-firstboot.log 2>&1
+      trap 'echo "ERROR: line $LINENO: $BASH_COMMAND" >&2' ERR
 
       REGION="${region}"
       SECRET_ARN="${secret_arn}"
@@ -53,6 +57,7 @@ write_files:
 
       %{ if !baked ~}
       # --- 1. Heavy install (checkpoint=latest) — cast REMnux + remnux-mcp --
+      echo "== 1. Heavy install (checkpoint=latest) — cast REMnux + remnux-mcp"
       REMNUX_USER="$REMNUX_USER" REMNUX_MODE="${remnux_mode}" CAST_VER="${pins.cast}" \
         REMNUX_SALTSTACK_VERSION="${pins.remnux_saltstack}" NODEJS_VERSION="${pins.nodejs}" \
         REMNUX_MCP_VERSION="${pins.remnux_mcp_server}" AWSCLI_VERSION="${pins.awscli}" \
@@ -60,6 +65,7 @@ write_files:
       %{ endif ~}
 
       # --- 2. Shared HTTP token from Secrets Manager ------------------------
+      echo "== 2. Shared HTTP token from Secrets Manager"
       SECRET=$(aws --region "$REGION" secretsmanager get-secret-value \
         --secret-id "$SECRET_ARN" --query SecretString --output text)
       MCP_TOKEN=$(echo "$SECRET" | jq -r .remnux_mcp_token)
@@ -69,6 +75,7 @@ write_files:
       echo "MCP_TOKEN=$MCP_TOKEN" > /etc/remnux-mcp.env
 
       # --- 3. Enable the service --------------------------------------------
+      echo "== 3. Enable the service"
       systemctl daemon-reload
       systemctl enable --now remnux-mcp.service
 
