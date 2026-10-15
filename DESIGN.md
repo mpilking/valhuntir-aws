@@ -98,7 +98,7 @@ Each host bootstraps itself on first boot. Secrets (examiner password, gateway A
 
 **Accounts vs. identity.** Each distro keeps its conventional OS login — **`sansforensics`** on SIFT, **`remnux`** on REMnux — created in cloud-init (SIFT's is created with our generated password *before* `cast`, so the salt-states' well-known default password never applies). The Valhuntir **examiner identity** (`VHIR_EXAMINER`, e.g. `analyst`) is separate and passed to `setup-sift.sh --examiner`; it drives audit attribution and finding IDs regardless of which OS account you log in as. The Windows SMB mount authenticates to the case-dir share as `sansforensics`.
 
-> The exact installer invocations are the documented commands from each repo; where a repo's unattended flags differ, the cloud-init template calls it out with a `# TODO(verify)` marker so it's easy to reconcile on first real run.
+> Each host runs its repo's own installer (`setup-sift.sh`, `setup-opensearch.sh`, `setup-windows.ps1`, the cast salt-states) in its documented unattended mode; local glue is limited to what those installers can't do without a human (secrets, the Windows join hand-off, private-IP networking).
 
 ---
 
