@@ -136,6 +136,11 @@ Known limitations:
   code (not exercised) it launches `.pl` files without Perl and runs the `.ps1`,
   which only defines a function, as a script — so through `run_windows_command`
   neither is likely to do anything useful.
+- Windows Defender stays on, but its first boot excludes the case share
+  (`\\<sift>\cases` and `S:\`) and `C:\Tools`. Without the share exclusion
+  Defender blocks tools from reading flagged evidence over SMB and tries to
+  delete it on SIFT (tested with EICAR). Evidence copied to local Windows
+  folders is still scanned.
 - The Windows host finishes first boot ~3 minutes after SIFT publishes its join
   code; the gateway shows `wintools-mcp` ~2 minutes after that.
 - REMnux at the July pins: 12 salt states fail because Malcat Lite and

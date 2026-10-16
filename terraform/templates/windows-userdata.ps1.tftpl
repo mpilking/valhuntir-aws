@@ -98,6 +98,12 @@ try {
   New-NetFirewallRule -DisplayName "wintools-mcp 4624 from SIFT" -Direction Inbound `
     -Protocol TCP -LocalPort 4624 -RemoteAddress $SiftIp -Action Allow | Out-Null
 
+  # --- 3b. Defender: never quarantine evidence on the case share -----------------
+  # Without this, Defender blocks tools from reading flagged evidence over SMB
+  # and tries to delete it from SIFT's case directory (tested with EICAR).
+  # Defender sees network files by UNC path; S: is the drive setup-windows.ps1 maps.
+  Add-MpPreference -ExclusionPath "\\$SiftIp\cases", "S:\"
+
   # --- 4. Health: the server must be listening ----------------------------------
   $up = $false
   for ($i = 0; $i -lt 30; $i++) {
