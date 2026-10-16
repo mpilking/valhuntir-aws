@@ -4,7 +4,7 @@
   "description": "Every component at the version current on 2026-07-12 19:00 UTC — the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
   "region": "us-east-1",
   "validated_on": "2026-10-16",
-  "iac_commit": "76b1ca2631c647d1b3a1e80dd0de5e0daa678cb5",
+  "iac_commit": "86cd92224d5934e4ea34951aaf52275ce8f18446",
   "build": {
     "sift_user": "sansforensics",
     "sift_mode": "desktop",
