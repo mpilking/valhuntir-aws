@@ -121,15 +121,23 @@ Validated end to end on AWS (2026-10-15), all four hosts, both ways:
   every host boots unattended; the SIFT gateway serves all nine backends
   (incl. `remnux-mcp`, `opensearch-mcp`, `wintools-mcp`) behind the Secrets
   Manager token; Windows joins the gateway and maps the case share by itself.
+  Re-validated 2026-10-16 with the Windows forensic tools baked in: wintools-mcp
+  finds 29 of its 31 catalog tools (all but the registration-gated KAPE and
+  DumpIt), and EvtxECmd and Hayabusa run end to end through the SIFT gateway.
 - **`checkpoint=latest`** (newest upstream that day): same result.
 
 Known limitations:
 
 - First boot of a baked SIFT pre-reads ~11 GB (lazy-loaded snapshot blocks), so
   the gateway's heavier backends are ready ~15 minutes after launch.
-- Windows: `setup-windows.ps1` warns that the .NET runtime is missing (needed by
-  some Zimmerman tools); wintools-mcp runs whatever forensic tools are present
-  on the box, and this stack installs none beyond upstream's defaults.
+- Windows: KAPE and DumpIt (registration-gated response tools) aren't
+  installed. Upstream quirks: `mactime.pl` and `Get-InjectedThreadEx.ps1` are
+  installed (mactime runs under Strawberry Perl), but from reading wintools-mcp's
+  code (not exercised) it launches `.pl` files without Perl and runs the `.ps1`,
+  which only defines a function, as a script — so through `run_windows_command`
+  neither is likely to do anything useful.
+- The Windows host finishes first boot ~3 minutes after SIFT publishes its join
+  code; the gateway shows `wintools-mcp` ~2 minutes after that.
 - REMnux at the July pins: 12 salt states fail because Malcat Lite and
   Speakeasy's helper scripts changed upstream since July (checksum mismatch);
   the rest of REMnux and remnux-mcp work. Current pins have no failures.

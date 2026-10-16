@@ -41,6 +41,7 @@ locals {
   sift_install_b64       = base64gzip(file("${path.module}/../packer/scripts/install-sift.sh"))
   remnux_install_b64     = base64gzip(file("${path.module}/../packer/scripts/install-remnux.sh"))
   opensearch_install_b64 = base64gzip(file("${path.module}/../packer/scripts/install-opensearch.sh"))
+  windows_tools_b64      = base64gzip(file("${path.module}/../packer/scripts/install-windows-tools.ps1"))
 }
 
 ###############################################################################
@@ -296,12 +297,13 @@ resource "aws_instance" "windows" {
   }
 
   user_data = templatefile("${path.module}/templates/windows-userdata.ps1.tftpl", {
-    region          = var.region
-    sift_ip         = local.ip.sift
-    examiner_name   = var.examiner_name
-    join_code_param = local.join_code_param
-    pins            = local.pins
-    baked           = local.baked
+    region           = var.region
+    sift_ip          = local.ip.sift
+    examiner_name    = var.examiner_name
+    join_code_param  = local.join_code_param
+    pins             = local.pins
+    baked            = local.baked
+    tools_script_b64 = local.baked ? "" : local.windows_tools_b64
   })
 
   depends_on = [aws_route_table_association.private, aws_nat_gateway.main]

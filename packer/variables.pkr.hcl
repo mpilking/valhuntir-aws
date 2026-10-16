@@ -54,6 +54,10 @@ variable "docker" { type = string }
 variable "wintools_mcp" { type = string }
 variable "git_windows" { type = string }
 variable "python_windows" { type = string }
+variable "windows_tools" {
+  description = "Forensic tool versions for the Windows host (checkpoint pins.windows_tools; see scripts/install-windows-tools.ps1)."
+  type        = map(string)
+}
 
 locals {
   stamp = formatdate("YYYYMMDD-hhmmss", timestamp())

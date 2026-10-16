@@ -77,7 +77,8 @@ A checkpoint is promoted only after a full-stack deploy passes:
   for each; requests without the Secrets Manager token get 401
 - TLS cert SAN is the instance's own IP; examiner identity is `examiner_name`
 - Windows: joined the gateway, case share mapped (`smbstatus -b` on SIFT shows
-  the Windows session)
+  the Windows session); wintools-mcp's `check_windows_tools` finds the installed
+  tools, and EvtxECmd / Hayabusa / Chainsaw produce output from an event log
 - OpenSearch: cluster green, reachable from SIFT on the private IP
 
 ## File format
@@ -92,14 +93,21 @@ A checkpoint is promoted only after a full-stack deploy passes:
   "pins":  { "ubuntu_ami", "windows_base_ami", "awscli", "cast",
              "sift_saltstack", "sift_mcp", "valhuntir", "opensearch_mcp",
              "pypi_exclude_newer", "remnux_saltstack", "remnux_mcp_server",
-             "nodejs", "docker", "wintools_mcp", "git_windows", "python_windows" },
+             "nodejs", "docker", "wintools_mcp", "git_windows", "python_windows",
+             "windows_tools": { "dotnet_runtime", "zimmerman", "sysinternals",
+               "hayabusa", "chainsaw", "capa", "yara", "densityscout", "winpmem",
+               "moneta", "hollows_hunter", "get_injectedthreadex",
+               "strawberry_perl", "sleuthkit" } },
   "amis":  { "sift", "remnux", "opensearch", "windows" },
   "notes": []
 }
 ```
 
 Pin names match the Packer variables (`packer/variables.pkr.hcl`) and Terraform's
-`local.pins` (`terraform/checkpoint.tf`).
+`local.pins` (`terraform/checkpoint.tf`). `windows_tools` is only used by the
+Windows bake (`packer/scripts/install-windows-tools.ps1`); its `zimmerman`
+(`net9`) and `sysinternals` (`current`) entries can't name a version because
+those vendors only publish current builds — the baked AMI is what freezes them.
 
 ## Cost and cleanup
 

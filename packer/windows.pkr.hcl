@@ -1,5 +1,6 @@
 # Windows wintools-mcp host AMI: pinned Git/Python (official installers), wintools-mcp source,
-# forensic-knowledge and Python environment staged; generalised with sysprep.
+# forensic-knowledge and Python environment staged, plus the forensic tools
+# wintools-mcp runs (.NET 9, Zimmerman, Sysinternals, Hayabusa, ...); generalised with sysprep.
 # setup-windows.ps1 itself (token, TLS cert, join, scheduled task) runs at first
 # boot. Variables: variables.pkr.hcl. Run via checkpoints/bake.sh.
 
@@ -9,7 +10,7 @@ source "amazon-ebs" "windows" {
   source_ami      = var.windows_base_ami
   subnet_id       = var.subnet_id
   ami_name        = "valhuntir-windows-${var.checkpoint}-${local.stamp}"
-  ami_description = "Valhuntir Windows (checkpoint ${var.checkpoint}): wintools-mcp ${substr(var.wintools_mcp, 0, 7)} staged, sysprepped"
+  ami_description = "Valhuntir Windows (checkpoint ${var.checkpoint}): wintools-mcp ${substr(var.wintools_mcp, 0, 7)} staged + forensic tools, sysprepped"
 
   associate_public_ip_address               = true
   temporary_security_group_source_public_ip = true
@@ -59,6 +60,11 @@ build {
       "PYPI_EXCLUDE_NEWER=${var.pypi_exclude_newer}",
     ]
     script = "${path.root}/scripts/install-windows.ps1"
+  }
+
+  provisioner "powershell" {
+    environment_vars = ["WINDOWS_TOOLS_B64=${base64encode(jsonencode(var.windows_tools))}"]
+    script           = "${path.root}/scripts/install-windows-tools.ps1"
   }
 
   # Must be last: generalise. Each launch gets a new SID, computer name and

@@ -1,7 +1,7 @@
 {
   "name": "2026-07-12",
-  "status": "validated",
-  "description": "Every component at the version current on 2026-07-12 19:00 UTC — the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
+  "status": "candidate",
+  "description": "Every component at the version current on 2026-07-12 19:00 UTC \u2014 the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
   "region": "us-east-1",
   "validated_on": "2026-10-15",
   "iac_commit": "5fa0aa3f3675c2ace1404f5d6eafd0af078da5dd",
@@ -27,18 +27,36 @@
     "docker": "29.6.1",
     "wintools_mcp": "b58a60161f30188fe295f23f3655c503ae5c0a4d",
     "git_windows": "2.55.0.windows.2",
-    "python_windows": "3.12.10"
+    "python_windows": "3.12.10",
+    "windows_tools": {
+      "dotnet_runtime": "9.0.17",
+      "zimmerman": "net9",
+      "sysinternals": "current",
+      "hayabusa": "v3.10.0",
+      "chainsaw": "v2.16.2",
+      "capa": "v9.4.0",
+      "yara": "v4.5.5",
+      "densityscout": "45",
+      "winpmem": "v4.0.rc1",
+      "moneta": "1.0",
+      "hollows_hunter": "v0.4.1.1",
+      "get_injectedthreadex": "30a2ea684b4d031a86291d9e2d8b295d1ee18754",
+      "strawberry_perl": "SP_54221_64bit",
+      "sleuthkit": "sleuthkit-4.15.0"
+    }
   },
   "amis": {
     "sift": "ami-0e21d4f2479b872cb",
     "remnux": "ami-0fea0e3fa293bde19",
     "opensearch": "ami-0153f27e4ac4bc109",
-    "windows": "ami-0c2d3cd87b8c50006"
+    "windows": "ami-09005b7383ce1e7ce"
   },
   "notes": [
     "ubuntu_ami is Canonical's noble 20260626 build, the one SIFT was validated on in July.",
     "windows_base_ami is Windows_Server-2022-English-Full-Base-2026.07.15, the oldest still available when this checkpoint was baked (AWS had already deregistered the June image current on 2026-07-12). The baked Windows AMI preserves the exact OS from here on.",
     "OpenSearch 3.5.0 comes from opensearch-mcp's docker-compose.yml at the pinned commit; Docker Hub rebuilds tags monthly, so the exact image digest is recorded in /etc/valhuntir/versions/opensearch on the baked AMI.",
-    "Validated 2026-10-15 by a clean full-stack deploy (all four hosts): 9/9 gateway backends ok incl. remnux-mcp, opensearch-mcp, wintools-mcp; Windows joined + case share mapped unattended. REMnux at these pins has 12 failed salt states (Malcat Lite, Speakeasy helper checksums changed upstream since July)."
+    "Validated 2026-10-15 by a clean full-stack deploy (all four hosts): 9/9 gateway backends ok incl. remnux-mcp, opensearch-mcp, wintools-mcp; Windows joined + case share mapped unattended. REMnux at these pins has 12 failed salt states (Malcat Lite, Speakeasy helper checksums changed upstream since July).",
+    "2026-10-16: Windows AMI re-baked with the forensic tools wintools-mcp runs (pins.windows_tools, versions as of 2026-07-12); it replaces the earlier tool-less Windows AMI (ami-0c2d3cd87b8c50006, deleted). Zimmerman (net9, all builds dated Apr-May 2026) and Sysinternals (current; Procdump and Sigcheck were re-published 2026-10-15) can't be fetched by version: the AMI is the frozen copy, with SHA256s in C:\\ProgramData\\valhuntir\\versions\\windows-tools.txt.",
+    "Re-validated 2026-10-16 by a clean full-stack deploy: 9/9 gateway backends ok; wintools-mcp check_windows_tools finds 29/31 catalog tools (not KAPE, DumpIt); EvtxECmd and Hayabusa run via the gateway's run_windows_command; all tools run as SYSTEM without EULA prompts; no Defender detections."
   ]
 }

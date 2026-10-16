@@ -36,6 +36,22 @@ docker_latest() {  # newest docker-ce in Docker's noble repo, e.g. 29.9.1
     | sed -E 's/^5://; s/-1~ubuntu.*//' | sort -V | tail -1
 }
 
+windows_tools() {  # pins.windows_tools (see packer/scripts/install-windows-tools.ps1)
+  jq -n \
+    --arg dotnet "$(curl -fsSL https://builds.dotnet.microsoft.com/dotnet/release-metadata/9.0/releases.json | jq -r '."latest-runtime"')" \
+    --arg hayabusa "$(gh_latest_tag Yamato-Security/hayabusa)" --arg chainsaw "$(gh_latest_tag WithSecureLabs/chainsaw)" \
+    --arg capa "$(gh_latest_tag mandiant/capa)" --arg yara "$(gh_latest_tag VirusTotal/yara)" \
+    --arg densityscout "$(curl -fsSL https://www.cert.at/en/downloads/software/software-densityscout \
+        | grep -oE 'densityscout_build_[0-9]+_windows' | grep -oE '[0-9]+' | sort -n | tail -1)" \
+    --arg winpmem "$(gh_latest_tag Velocidex/WinPmem)" --arg moneta "$(gh_latest_tag forrest-orr/moneta)" \
+    --arg hollows "$(gh_latest_tag hasherezade/hollows_hunter)" --arg git "$(gh_head jdu2600/Get-InjectedThreadEx)" \
+    --arg perl "$(gh_latest_tag StrawberryPerl/Perl-Dist-Strawberry)" --arg tsk "$(gh_latest_tag sleuthkit/sleuthkit)" \
+    '{dotnet_runtime: $dotnet, zimmerman: "net9", sysinternals: "current", hayabusa: $hayabusa,
+      chainsaw: $chainsaw, capa: $capa, yara: $yara, densityscout: $densityscout, winpmem: $winpmem,
+      moneta: $moneta, hollows_hunter: $hollows, get_injectedthreadex: $git,
+      strawberry_perl: $perl, sleuthkit: $tsk}'
+}
+
 echo "resolving latest versions..."
 UBUNTU=$("$AWS" ec2 describe-images --region "$REGION" --owners 099720109477 \
   --filters 'Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*' \
@@ -59,6 +75,7 @@ jq -n \
   --arg docker "$(docker_latest)" \
   --arg wintools "$(gh_head AppliedIR/wintools-mcp)" \
   --arg git "$(gh_latest_tag git-for-windows/git)" --arg python "$(python_latest)" \
+  --argjson wintools_tools "$(windows_tools)" \
 '{
   name: $name, status: "candidate",
   description: ("Newest upstream versions as of " + $now + "."),
@@ -69,13 +86,14 @@ jq -n \
     sift_saltstack: $sift_saltstack, sift_mcp: $sift_mcp, valhuntir: $valhuntir,
     opensearch_mcp: $opensearch_mcp, pypi_exclude_newer: $now,
     remnux_saltstack: $remnux_saltstack, remnux_mcp_server: $remnux_mcp, nodejs: $nodejs,
-    docker: $docker, wintools_mcp: $wintools, git_windows: $git, python_windows: $python
+    docker: $docker, wintools_mcp: $wintools, git_windows: $git, python_windows: $python,
+    windows_tools: $wintools_tools
   },
   amis: {sift: "", remnux: "", opensearch: "", windows: ""},
   notes: []
 }' > "$OUT"
 
-EMPTY=$(jq -r '.pins | to_entries[] | select(.value == "" or .value == "null") | .key' "$OUT")
+EMPTY=$(jq -r '.pins | paths(scalars) as $p | select(getpath($p) == "" or getpath($p) == "null") | $p | join(".")' "$OUT")
 if [ -n "$EMPTY" ]; then
   echo "WARNING: could not resolve: $EMPTY — set them in $OUT before baking" >&2
 fi

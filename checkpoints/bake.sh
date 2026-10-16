@@ -40,9 +40,9 @@ if [[ " ${HOSTS[*]} " == *" windows "* ]] && [ "$(jq -r .pins.windows_base_ami "
   jq --arg v "$WIN" '.pins.windows_base_ami = $v' "$CP" > "$CP.tmp" && mv "$CP.tmp" "$CP"
 fi
 
-MISSING=$(jq -r '.pins | to_entries[] | select(.value == "") | .key' "$CP")
+MISSING=$(jq -r '.pins | paths(scalars) as $p | select(getpath($p) == "") | $p | join(".")' "$CP")
 [ -z "$MISSING" ] || { echo "checkpoint has empty pins: $MISSING" >&2; exit 1; }
-if jq -e '.pins | to_entries[] | select(.value == "latest")' "$CP" >/dev/null; then
+if jq -e '[.pins | .. | scalars | select(. == "latest")] | length > 0' "$CP" >/dev/null; then
   echo "checkpoint has 'latest' pins; resolve them first (new.sh writes concrete versions)" >&2; exit 1
 fi
 

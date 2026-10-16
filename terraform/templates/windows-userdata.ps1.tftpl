@@ -10,7 +10,8 @@
 #   startup scheduled task. Nothing secret is baked into the AMI.
 #
 # Checkpoint deploys launch an AMI where install-windows.ps1 already staged the
-# pinned code + Python environment; checkpoint=latest installs the newest here.
+# pinned code + Python environment and install-windows-tools.ps1 the forensic
+# tools; checkpoint=latest installs the newest of both here.
 
 Start-Transcript -Path C:\ProgramData\valhuntir\firstboot.log -Append
 $ErrorActionPreference = "Stop"
@@ -51,6 +52,19 @@ try {
   Update-Path
   New-Item -ItemType Directory -Force -Path $Install | Out-Null
   if (-not (Test-Path $Wintools)) { git clone --quiet https://github.com/AppliedIR/wintools-mcp.git $Wintools }
+
+  # Newest forensic tools: the same install-windows-tools.ps1 Packer bakes,
+  # embedded gzip+base64, with every version "latest".
+  $gz = [IO.MemoryStream]::new([Convert]::FromBase64String("${tools_script_b64}"))
+  $rd = [IO.StreamReader]::new([IO.Compression.GZipStream]::new($gz, [IO.Compression.CompressionMode]::Decompress))
+  $toolsScript = "C:\ProgramData\valhuntir\install-windows-tools.ps1"
+  Set-Content -Path $toolsScript -Value $rd.ReadToEnd() -Encoding UTF8
+  $latest = @{}
+  foreach ($k in "dotnet_runtime","zimmerman","sysinternals","hayabusa","chainsaw","capa","yara","densityscout",
+                 "winpmem","moneta","hollows_hunter","get_injectedthreadex","strawberry_perl","sleuthkit") { $latest[$k] = "latest" }
+  $env:WINDOWS_TOOLS_B64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($latest | ConvertTo-Json -Compress)))
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $toolsScript *>&1 | ForEach-Object { "$_" }
+  if ($LASTEXITCODE -ne 0) { throw "install-windows-tools.ps1 failed ($LASTEXITCODE)" }
 %{ endif ~}
   Update-Path
 
