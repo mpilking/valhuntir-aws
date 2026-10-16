@@ -1,10 +1,10 @@
 {
   "name": "2026-07-12",
-  "status": "candidate",
-  "description": "Every component at the version current on 2026-07-12 19:00 UTC \u2014 the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
+  "status": "validated",
+  "description": "Every component at the version current on 2026-07-12 19:00 UTC — the date SIFT core was first validated. SIFT pins are those validated then (re-validated 2026-10-15); REMnux/OpenSearch/Windows use the same as-of date for compatibility with that sift-mcp.",
   "region": "us-east-1",
-  "validated_on": "2026-10-15",
-  "iac_commit": "5fa0aa3f3675c2ace1404f5d6eafd0af078da5dd",
+  "validated_on": "2026-10-16",
+  "iac_commit": "76b1ca2631c647d1b3a1e80dd0de5e0daa678cb5",
   "build": {
     "sift_user": "sansforensics",
     "sift_mode": "desktop",
