@@ -1,5 +1,15 @@
 # Valhuntir on AWS (Terraform)
 
+> [!WARNING]
+> **Under active development — not ready for production use.** It has been
+> tested end to end only on throwaway deployments, and interfaces, defaults, and
+> the checkpoint format may still change. Don't use it for real casework or
+> real evidence yet.
+>
+> The AMIs in [checkpoints/](checkpoints/) are private to the author's AWS
+> account, so a checkpoint can't be deployed elsewhere as-is. Build your own
+> with `checkpoints/bake.sh`, or deploy with `checkpoint=latest`.
+
 Infrastructure-as-code to deploy the [Valhuntir](https://github.com/AppliedIR/Valhuntir) /
 [sift-mcp](https://github.com/AppliedIR/sift-mcp) AI-assisted DFIR harness to AWS.
 
@@ -96,22 +106,46 @@ terraform apply
 terraform output usage_hint
 terraform output -raw ssh_tunnel_cmd | bash      # open the tunnel
 terraform output -raw get_credentials_cmd | bash # reveal generated creds
+ssh -J ubuntu@$(terraform output -raw bastion_public_ip) sansforensics@$(terraform output -raw sift_private_ip) vhir-ready --wait
 ```
 
-RDP a client to `localhost:3389` to land on the SIFT desktop, or point the
+RDP a client to `localhost:33389` to land on the SIFT desktop, or point the
 Examiner Portal / an LLM client at `https://localhost:4508` (the gateway serves TLS
 with a CA generated on each instance: `~/.vhir/tls/ca-cert.pem` on SIFT).
 
-## Loading evidence
+## Evidence: store, fetch, add to a case
+
+The evidence bucket is the engagement's evidence store, not a Valhuntir inbox.
+Uploading puts nothing into a case; you choose what SIFT fetches and what
+Valhuntir processes.
 
 ```bash
-# from your acquisition workstation (through the VPC — e.g. over the tunnel/VPN):
-aws s3 cp ./INC-2026-0219.E01 s3://<evidence_bucket>/incoming/INC-2026-0219/
+# 1. From an acquisition workstation (IP in evidence_upload_cidrs, which
+#    defaults to allowed_admin_cidrs). Records each file's SHA-256 on the object.
+tools/evidence-upload.sh ./disk.E01 ./triage INC-2026-1022/laptop-01
 
-# on SIFT:
-pull-evidence INC-2026-0219
-vhir evidence register /cases/INC-2026-0219/evidence/*
+# 2. On SIFT: copy what you want to work on into the store (/cases/store),
+#    over the S3 VPC endpoint; verifies the SHA-256 and makes files read-only.
+evidence-fetch INC-2026-1022/laptop-01
+
+# 3. Only what you add goes into a Valhuntir case: hard-linked into
+#    /cases/vhir/<case>/evidence (no second copy) and `vhir evidence register`ed.
+vhir case init "Laptop compromise"
+evidence-add /cases/store/INC-2026-1022/laptop-01/disk.E01
+vhir evidence lock
 ```
+
+Objects can be downloaded only through the VPC endpoint, i.e. by hosts in the
+stack, never from the internet. A plain `aws s3 cp` upload works too;
+`evidence-fetch` then reports `no-uploader-hash` and records the hash it computes.
+Every fetch is logged with its S3 version id in `/cases/store/fetch-log.tsv`.
+`exports/` is the one prefix SIFT can write to.
+
+## Is it ready?
+
+On SIFT, `vhir-ready` checks first boot, the `/cases` volume, the gateway and
+every backend this deployment includes (the Windows join too), OpenSearch, and
+the case share; `vhir-ready --wait` blocks until everything passes.
 
 ## Status / caveats
 
@@ -124,6 +158,12 @@ Validated end to end on AWS (2026-10-15), all four hosts, both ways:
   Re-validated 2026-10-16 with the Windows forensic tools baked in: wintools-mcp
   finds 29 of its 31 catalog tools (all but the registration-gated KAPE and
   DumpIt), and EvtxECmd and Hayabusa run end to end through the SIFT gateway.
+  Re-validated 2026-10-22 along the analyst path: SSH and the tunnel (Portal,
+  API, RDP to SIFT and Windows) from a workstation; `vhir-ready`; evidence
+  uploaded from the workstation, fetched with matching hashes, added to a case,
+  locked and verified; and Windows reads the case evidence over the share.
+  Uploads from IPs that aren't allowed, and downloads from outside the VPC, are
+  refused. Synthetic evidence only, no real case analysis yet.
 - **`checkpoint=latest`** (newest upstream that day): same result.
 
 Known limitations:

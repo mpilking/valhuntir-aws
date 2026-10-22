@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# evidence-fetch <s3-path>... — copy evidence from the WORM evidence bucket to
+# /cases/store/<s3-path> over the S3 VPC endpoint.
+#
+# A path is a file or a "folder" (key prefix) in the bucket, e.g.
+#   evidence-fetch INC-2026-1022/laptop-01
+#   evidence-fetch s3://<bucket>/INC-2026-1022/fw-logs/fw1.log
+# Fetching does not touch any Valhuntir case; add files to a case with
+# evidence-add. Each file is hashed (SHA-256), checked against the sha256 the
+# uploader recorded (evidence-upload.sh), made read-only, and logged with its
+# S3 version id in /cases/store/fetch-log.tsv.
+set -euo pipefail
+. /etc/valhuntir/stack.env
+STORE="$EVIDENCE_STORE"; LOG="$STORE/fetch-log.tsv"
+
+if [ $# -eq 0 ] || [ "$1" = -h ] || [ "$1" = --help ]; then
+  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  echo; echo "Bucket contents:  aws s3 ls --recursive s3://$EVIDENCE_BUCKET/"
+  exit 2
+fi
+[ "$(id -u)" != 0 ] || { echo "run as $SIFT_USER, not root" >&2; exit 2; }
+[ -f "$LOG" ] || printf 'fetched_utc\ts3_key\tversion_id\tsha256\tuploader_sha256\tresult\n' > "$LOG"
+
+n=0; bad=0
+for arg in "$@"; do
+  p="${arg#s3://"$EVIDENCE_BUCKET"/}"; p="${p#/}"
+  case "/$p/" in //|*/../*) echo "bad path: $arg" >&2; exit 2;; esac
+  # The exact key, or everything under it as a folder (not "laptop-01x/" for "laptop-01").
+  mapfile -t keys < <(aws s3api list-objects-v2 --region "$REGION" --bucket "$EVIDENCE_BUCKET" \
+      --prefix "$p" --output json --query 'Contents[].Key' |
+    jq -r --arg p "$p" '.[]? | select(. == $p or startswith(($p | rtrimstr("/")) + "/")) | select(endswith("/") | not)')
+  [ ${#keys[@]} -gt 0 ] || { echo "nothing in s3://$EVIDENCE_BUCKET/ at: $p" >&2; bad=$((bad + 1)); continue; }
+
+  for key in "${keys[@]}"; do
+    dest="$STORE/$key"
+    if [ -e "$dest" ]; then echo "exists, skipped: $dest"; continue; fi
+    head=$(aws s3api head-object --region "$REGION" --bucket "$EVIDENCE_BUCKET" --key "$key" --output json)
+    ver=$(jq -r '.VersionId // ""' <<<"$head")
+    want=$(jq -r '.Metadata.sha256 // "" | ascii_downcase' <<<"$head")
+    mkdir -p "$(dirname "$dest")"
+    echo "fetching s3://$EVIDENCE_BUCKET/$key ($(numfmt --to=iec "$(jq -r .ContentLength <<<"$head")"))"
+    aws s3 cp --region "$REGION" --only-show-errors "s3://$EVIDENCE_BUCKET/$key" "$dest.part"
+    got=$(sha256sum "$dest.part" | cut -d' ' -f1)
+    if [ -z "$want" ]; then res="no-uploader-hash"
+    elif [ "$want" = "$got" ]; then res="match"
+    else res="MISMATCH"; bad=$((bad + 1)); fi
+    chmod 0444 "$dest.part"; mv "$dest.part" "$dest"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$key" "$ver" "$got" "$want" "$res" >> "$LOG"
+    echo "  sha256 $got  [$res]  -> $dest"
+    n=$((n + 1))
+  done
+done
+echo "$n file(s) fetched to $STORE; log: $LOG"
+[ "$bad" = 0 ] || { echo "$bad problem(s) — see above" >&2; exit 1; }

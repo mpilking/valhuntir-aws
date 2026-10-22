@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# vhir-ready [--wait] — is this deployment ready for a case?
+#
+# Checks first boot, the /cases volume, the gateway and every backend this
+# stack deployed (incl. the Windows join), OpenSearch, and the case share.
+# Exit 0 when all pass. --wait re-checks every 30 s until ready or failed (max 45 min).
+set -uo pipefail
+. /etc/valhuntir/stack.env
+
+# Exit 1 = still coming up, 2 = something failed (--wait stops on that).
+if [ "${1:-}" = --wait ]; then
+  for _ in $(seq 1 90); do "$0" >/dev/null 2>&1; [ $? = 1 ] || break; sleep 30; done
+  exec "$0"
+fi
+
+fails=0; failed=0; booted=0
+ok()   { printf '  [ OK ] %s\n' "$*"; }
+bad()  { printf '  [FAIL] %s\n' "$*"; fails=$((fails + 1)); failed=1; }
+wait_(){ printf '  [WAIT] %s\n' "$*"; fails=$((fails + 1)); }
+
+# The first-boot log is root-only; the SIFT user has passwordless sudo.
+LOG=/var/log/valhuntir-firstboot.log
+FB=$(cat "$LOG" 2>/dev/null || sudo -n cat "$LOG" 2>/dev/null)
+if [ -z "$FB" ]; then wait_ "first boot has not started logging yet ($LOG)"
+elif [ "$(tail -1 <<<"$FB")" = "valhuntir-firstboot complete" ]; then ok "first boot complete"; booted=1
+elif grep -q '^ERROR' <<<"$FB"; then bad "first boot failed: $(grep -m1 '^ERROR' <<<"$FB") (sudo less $LOG)"
+else wait_ "first boot still running: $(grep '^== ' <<<"$FB" | tail -1) (sudo tail -f $LOG)"; fi
+
+if findmnt -n /cases >/dev/null; then ok "/cases volume mounted, $(df -h --output=avail /cases | tail -1 | tr -d ' ') free"
+else bad "/cases is not a separate volume"; fi
+for d in "$EVIDENCE_STORE" "$VHIR_CASES_ROOT"; do [ -d "$d" ] || bad "missing $d"; done
+
+SECRET=$(aws --region "$REGION" secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
+  --query SecretString --output text 2>/dev/null) || { bad "cannot read the harness secret"; exit 2; }
+TOKEN=$(jq -r .gateway_api_key <<<"$SECRET")
+gw() { curl -sk -m 60 -H "Authorization: Bearer $TOKEN" "https://127.0.0.1:4508$1"; }
+
+if curl -sk -o /dev/null -m 5 https://127.0.0.1:4508/health; then ok "gateway up (https://127.0.0.1:4508)"
+elif [ "$booted" = 1 ]; then bad "gateway not answering on :4508 (systemctl --user status vhir-gateway)"
+else wait_ "gateway not started yet (first boot starts it)"; fi
+
+want="case-mcp forensic-mcp forensic-rag-mcp report-mcp sift-mcp windows-triage-mcp"
+[ -n "$OPENSEARCH_URL" ] && want="$want opensearch-mcp"
+[ -n "$REMNUX_URL" ] && want="$want remnux-mcp"
+[ -n "$WINDOWS_IP" ] && want="$want wintools-mcp"
+BK=$(gw /api/v1/backends | jq -r '.backends[]? | "\(.name) \(.health.status // .health)"')
+TOOLS=$(gw /api/v1/tools | jq -r '[.tools[]?.backend] | group_by(.) | map("\(.[0]) \(length)") | .[]')
+for b in $want; do
+  st=$(awk -v b="$b" '$1 == b {print $2}' <<<"$BK"); nt=$(awk -v b="$b" '$1 == b {print $2}' <<<"$TOOLS")
+  if [ "$st" = ok ]; then ok "backend $b (${nt:-0} tools)"
+  elif [ -z "$st" ] && [ "$b" = wintools-mcp ]; then wait_ "backend wintools-mcp not joined yet (Windows joins ~5 min after SIFT)"
+  elif [ -z "$st" ]; then wait_ "backend $b not loaded yet"
+  else wait_ "backend $b: $st"; fi
+done
+
+if [ -n "$OPENSEARCH_URL" ]; then
+  h=$(curl -sk -m 8 -u "admin:$(jq -r .opensearch_admin <<<"$SECRET")" "$OPENSEARCH_URL/_cluster/health" | jq -r '.status // empty')
+  case "$h" in green|yellow) ok "OpenSearch cluster $h";; *) wait_ "OpenSearch not answering at $OPENSEARCH_URL";; esac
+fi
+
+if [ -n "$WINDOWS_IP" ]; then
+  if grep -qs "hosts allow.*$WINDOWS_IP" /etc/samba/smb.conf.d/vhir-cases.conf; then ok "case share open to Windows ($WINDOWS_IP)"
+  else wait_ "case share not configured for Windows yet"; fi
+fi
+
+if [ "$fails" = 0 ]; then echo "READY"; else echo "NOT READY ($fails check(s) above)"; exit $((1 + failed)); fi

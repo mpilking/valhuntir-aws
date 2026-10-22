@@ -11,21 +11,37 @@
 #   EXAMINER  = Valhuntir examiner identity (VHIR_EXAMINER) for audit/finding IDs
 
 write_files:
-  # Evidence pull helper — copies from the WORM bucket over the S3 VPC endpoint.
-  - path: /usr/local/bin/pull-evidence
-    permissions: "0755"
+  # Evidence + readiness helpers (terraform/files/sift/) and the stack facts
+  # they read. The bucket is the case's evidence store; fetching to SIFT and
+  # adding to a Valhuntir case are separate, explicit analyst steps.
+  - path: /etc/valhuntir/stack.env
+    permissions: "0644"
     owner: root:root
     content: |
-      #!/usr/bin/env bash
-      # Usage: pull-evidence <case-id> [s3-prefix]
-      set -euo pipefail
-      CASE="$1"
-      PREFIX="$${2:-incoming/$1}"
-      DEST="/cases/$CASE/evidence"
-      mkdir -p "$DEST"
-      aws s3 cp --recursive "s3://${evidence_bucket}/$PREFIX" "$DEST/"
-      echo "Fetched. Register chain of custody with:"
-      echo "  vhir evidence register $DEST/*"
+      REGION="${region}"
+      SECRET_ARN="${secret_arn}"
+      SIFT_USER="${sift_user}"
+      EVIDENCE_BUCKET="${evidence_bucket}"
+      EVIDENCE_STORE="/cases/store"
+      VHIR_CASES_ROOT="/cases/vhir"
+      OPENSEARCH_URL="${opensearch_url}"
+      REMNUX_URL="${remnux_url}"
+      WINDOWS_IP="${windows_ip}"
+  - path: /usr/local/bin/evidence-fetch
+    permissions: "0755"
+    owner: root:root
+    encoding: gz+b64
+    content: ${evidence_fetch_b64}
+  - path: /usr/local/bin/evidence-add
+    permissions: "0755"
+    owner: root:root
+    encoding: gz+b64
+    content: ${evidence_add_b64}
+  - path: /usr/local/bin/vhir-ready
+    permissions: "0755"
+    owner: root:root
+    encoding: gz+b64
+    content: ${vhir_ready_b64}
 
 %{ if !baked ~}
   # The heavy install script (single-sourced with Packer). base64 so YAML block
@@ -170,6 +186,19 @@ write_files:
       CASES_DEV="${cases_device}"
       HOME_DIR="/home/$SIFT_USER"
 
+      # --- 0. Hold Ubuntu's daily apt runs until first boot is done -----------
+      # apt-daily(-upgrade) can fire minutes after boot and hold the dpkg lock;
+      # upstream's join step then fails on its own `apt-get install samba`.
+      # The timers stay enabled and are restarted at the end.
+      systemctl stop apt-daily.timer apt-daily-upgrade.timer || true
+      wait_for_apt() {
+        for i in $(seq 1 180); do
+          fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || return 0
+          [ "$i" = 1 ] && echo "waiting for a running apt/dpkg to finish..."; sleep 5
+        done
+        echo "WARN: apt/dpkg still busy after 15 min"
+      }
+
       # --- 1. Mount the /cases evidence + extractions volume ----------------
       echo "== 1. Mount the /cases evidence + extractions volume"
       # The dedicated EBS volume may attach a moment after boot, and Nitro device
@@ -197,6 +226,7 @@ write_files:
       %{ if !baked ~}
       # --- 2. Heavy install (checkpoint=latest) — apt, cast SIFT, sift-mcp ----
       echo "== 2. Heavy install (checkpoint=latest) — apt, cast SIFT, sift-mcp"
+      wait_for_apt
       SIFT_USER="$SIFT_USER" CAST_VER="${pins.cast}" SIFT_MODE="${sift_mode}" \
         SIFT_SALTSTACK_VERSION="${pins.sift_saltstack}" SIFT_MCP_REF="${pins.sift_mcp}" \
         VALHUNTIR_REF="${pins.valhuntir}" OPENSEARCH_MCP_REF="${pins.opensearch_mcp}" \
@@ -217,6 +247,24 @@ write_files:
       echo "== 4. Apply the sansforensics login password + case-dir ownership"
       echo "$SIFT_USER:$LOGIN_PW" | chpasswd
       chown "$SIFT_USER":"$SIFT_USER" /cases
+      # /cases/store: evidence fetched from S3. /cases/vhir: Valhuntir cases
+      # (VHIR_CASES_DIR). One filesystem, so evidence-add hard-links store files
+      # into a case instead of copying them. ~/cases (upstream's default root)
+      # points there too, for anything that ignores VHIR_CASES_DIR.
+      install -d -o "$SIFT_USER" -g "$SIFT_USER" /cases/store /cases/vhir
+      if [ -d "$HOME_DIR/cases" ] && [ ! -L "$HOME_DIR/cases" ]; then
+        rmdir "$HOME_DIR/cases" 2>/dev/null || mv "$HOME_DIR/cases" "$HOME_DIR/cases.orig"
+      fi
+      ln -sfn /cases/vhir "$HOME_DIR/cases"; chown -h "$SIFT_USER":"$SIFT_USER" "$HOME_DIR/cases"
+      # SSH: the EC2 key pair lands on 'ubuntu'; analysts work as $SIFT_USER.
+      if [ -s /home/ubuntu/.ssh/authorized_keys ]; then
+        install -d -m 700 -o "$SIFT_USER" -g "$SIFT_USER" "$HOME_DIR/.ssh"
+        touch "$HOME_DIR/.ssh/authorized_keys"
+        while IFS= read -r k; do
+          grep -qxF "$k" "$HOME_DIR/.ssh/authorized_keys" || echo "$k" >> "$HOME_DIR/.ssh/authorized_keys"
+        done < /home/ubuntu/.ssh/authorized_keys
+        chown "$SIFT_USER":"$SIFT_USER" "$HOME_DIR/.ssh/authorized_keys"; chmod 600 "$HOME_DIR/.ssh/authorized_keys"
+      fi
       adduser xrdp ssl-cert || true
       systemctl enable --now xrdp || true
 
@@ -225,9 +273,20 @@ write_files:
       install -o "$SIFT_USER" -g "$SIFT_USER" -d "$HOME_DIR/.vhir"
       # VHIR_EXAMINER (env) has priority over the OS username in identity
       # resolution, so this overrides whatever was baked in.
-      if ! grep -q 'VHIR_EXAMINER' "$HOME_DIR/.bashrc" 2>/dev/null; then
+      # setup-sift.sh wrote the OS user here at bake time; replace it.
+      if grep -q '^export VHIR_EXAMINER=' "$HOME_DIR/.bashrc" 2>/dev/null; then
+        sed -i "s|^export VHIR_EXAMINER=.*|export VHIR_EXAMINER=$EXAMINER|" "$HOME_DIR/.bashrc"
+      else
         echo "export VHIR_EXAMINER=$EXAMINER" >> "$HOME_DIR/.bashrc"
       fi
+      # Case root: setup-sift.sh wrote ~/cases into .bashrc and start-gateway.sh.
+      if grep -q '^export VHIR_CASES_DIR=' "$HOME_DIR/.bashrc" 2>/dev/null; then
+        sed -i 's|^export VHIR_CASES_DIR=.*|export VHIR_CASES_DIR="/cases/vhir"|' "$HOME_DIR/.bashrc"
+      else
+        echo 'export VHIR_CASES_DIR="/cases/vhir"' >> "$HOME_DIR/.bashrc"
+      fi
+      [ ! -f "$HOME_DIR/.vhir/start-gateway.sh" ] ||
+        sed -i 's|^export VHIR_CASES_DIR=.*|export VHIR_CASES_DIR="/cases/vhir"|' "$HOME_DIR/.vhir/start-gateway.sh"
       # opensearch-mcp reads ~/.vhir/opensearch.yaml (same keys upstream writes;
       # the remote node uses the security plugin's self-signed demo certs).
       OS_CFG=""
@@ -280,11 +339,12 @@ write_files:
       run_user_systemctl() {
         sudo -u "$SIFT_USER" XDG_RUNTIME_DIR="$RUNTIME_DIR" systemctl --user "$@"
       }
-      # setup-sift.sh writes Environment=VHIR_EXAMINER=<os user> into the unit;
-      # a drop-in overrides it with the examiner identity (survives reinstalls).
+      # setup-sift.sh writes Environment=VHIR_EXAMINER=<os user> and
+      # VHIR_CASES_DIR=~/cases into the unit; a drop-in overrides both with the
+      # examiner identity and /cases/vhir (survives reinstalls).
       DROPIN="$HOME_DIR/.config/systemd/user/vhir-gateway.service.d"
       install -d -o "$SIFT_USER" -g "$SIFT_USER" "$DROPIN"
-      printf '[Service]\nEnvironment=VHIR_EXAMINER=%s\n' "$EXAMINER" > "$DROPIN/examiner.conf"
+      printf '[Service]\nEnvironment=VHIR_EXAMINER=%s\nEnvironment=VHIR_CASES_DIR=/cases/vhir\n' "$EXAMINER" > "$DROPIN/examiner.conf"
       chown "$SIFT_USER":"$SIFT_USER" "$DROPIN/examiner.conf"
       run_user_systemctl daemon-reload 2>/dev/null || true
       run_user_systemctl enable vhir-gateway
@@ -309,11 +369,13 @@ write_files:
       # --- 8. Windows worker: publish a join code (it registers itself) ------
       echo "== 8. Windows worker: publish a join code (it registers itself)"
       if [ -n "$WINDOWS_IP" ]; then
+        wait_for_apt   # upstream installs samba here
         /usr/local/sbin/vhir-publish-join-code.sh
         # Runs on after first boot; journalctl -u vhir-wintools-attach for its log.
         systemd-run --unit=vhir-wintools-attach --no-block /usr/local/sbin/vhir-wintools-attach.sh
       fi
 
+      systemctl start apt-daily.timer apt-daily-upgrade.timer || true
       echo "valhuntir-firstboot complete"
 
 runcmd:

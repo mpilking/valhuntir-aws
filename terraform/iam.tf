@@ -28,7 +28,7 @@ data "aws_iam_policy_document" "base" {
   }
 }
 
-# --- SIFT-only: evidence bucket read (incoming) + write (exports) ------------
+# --- SIFT-only: evidence bucket read (any prefix) + write (exports/) ----------
 data "aws_iam_policy_document" "sift_evidence" {
   statement {
     sid       = "ListEvidenceBucket"
@@ -38,7 +38,7 @@ data "aws_iam_policy_document" "sift_evidence" {
   statement {
     sid       = "ReadEvidence"
     actions   = ["s3:GetObject", "s3:GetObjectVersion"]
-    resources = ["${aws_s3_bucket.evidence.arn}/incoming/*"]
+    resources = ["${aws_s3_bucket.evidence.arn}/*"]
   }
   statement {
     sid       = "WriteExports"

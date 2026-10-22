@@ -20,7 +20,7 @@ output "remnux_private_ip" {
 }
 
 output "evidence_bucket" {
-  description = "WORM evidence bucket. Upload to the incoming/ prefix."
+  description = "WORM evidence store for the engagement (any layout; exports/ is SIFT's output prefix)."
   value       = aws_s3_bucket.evidence.bucket
 }
 
@@ -35,12 +35,13 @@ output "get_credentials_cmd" {
 }
 
 # Convenience: SSH tunnel that forwards XRDP (SIFT), the gateway/Portal, and
-# Windows RDP through the bastion to your localhost.
+# Windows RDP through the bastion to your localhost. Local RDP ports are not
+# 3389: that is usually taken by the workstation's own RDP/xrdp service.
 output "ssh_tunnel_cmd" {
-  description = "Port-forward SIFT XRDP:3389, gateway/Portal:4508, Windows RDP:13389 via the bastion."
+  description = "Port-forward SIFT XRDP to localhost:33389, gateway/Portal to :4508, Windows RDP to :13389 via the bastion."
   value = join(" ", compact([
     "ssh -N",
-    "-L 3389:${aws_instance.sift.private_ip}:3389",
+    "-L 33389:${aws_instance.sift.private_ip}:3389",
     "-L 4508:${aws_instance.sift.private_ip}:4508",
     var.enable_windows ? "-L 13389:${aws_instance.windows[0].private_ip}:3389" : "",
     "ubuntu@${aws_eip.bastion.public_ip}",
@@ -50,11 +51,13 @@ output "ssh_tunnel_cmd" {
 output "usage_hint" {
   value = <<-EOT
     1. Open the tunnel:   terraform output -raw ssh_tunnel_cmd | bash
-    2. XRDP into SIFT:    connect an RDP client to localhost:3389 (user = ${local.sift_user})
+    2. XRDP into SIFT:    connect an RDP client to localhost:33389 (user = ${local.sift_user})
     3. Examiner Portal:   https://localhost:4508/portal/  (TLS: per-instance CA at ~/.vhir/tls/ca-cert.pem on SIFT)
     4. Get credentials:   see 'get_credentials_cmd' output
-    5. Load evidence:     upload to s3://${aws_s3_bucket.evidence.bucket}/incoming/<case>/,
-                          then on SIFT run:  pull-evidence <case>
+    5. Ready?             on SIFT:  vhir-ready --wait
+    6. Evidence:          tools/evidence-upload.sh <files> <engagement>/<set>   (workstation)
+                          evidence-fetch <engagement>/<set>                    (SIFT -> /cases/store)
+                          evidence-add /cases/store/<file>                     (into the active case)
     SSM fallback (no bastion):
        aws ssm start-session --target <instance-id>
   EOT

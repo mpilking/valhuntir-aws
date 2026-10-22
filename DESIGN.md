@@ -75,10 +75,10 @@ SIFT is sized for Volatility 3 memory analysis (24 GB+ recommendation). All EBS 
 Evidence is the sensitive part, so it gets its own controls rather than riding the bastion path.
 
 **Primary path — S3 evidence bucket:**
-1. You upload acquired images/triage to `s3://<prefix>-evidence/incoming/…` from your acquisition workstation (`aws s3 cp --expected-size` multipart, or **Snowball** for TB-scale).
-2. The bucket has **Object Lock in COMPLIANCE/GOVERNANCE mode + versioning** → objects are write-once-read-many (WORM), which is a tamper-evident chain-of-custody store. **SSE-KMS** with the project key. **Block Public Access** fully on. Bucket policy restricts `s3:*` to the **VPC endpoint** only.
-3. SIFT's instance profile grants read on `incoming/` and write on `exports/` (for reports/case exports back out). SIFT pulls with `aws s3 cp` over the **S3 Gateway Endpoint** — no internet, no bastion, no NAT.
-4. `vhir` registers the evidence (hashes, chain of custody) after it lands on the `/cases` volume.
+1. The bucket is the engagement's **evidence store**, laid out however the analysts like (e.g. `<engagement>/<evidence-set>/…`). Analysts upload as they acquire, from their acquisition workstations (`tools/evidence-upload.sh`, which records each file's SHA-256 as object metadata), or Snowball for TB-scale. Uploads are allowed from `evidence_upload_cidrs` (default: `allowed_admin_cidrs`) or through the VPC endpoint.
+2. The bucket has **Object Lock in COMPLIANCE/GOVERNANCE mode + versioning** → objects are write-once-read-many (WORM), which is a tamper-evident chain-of-custody store. **SSE-KMS** with the project key. **Block Public Access** fully on. The bucket policy lets object bytes leave **only through the VPC endpoint** (to hosts in the stack), and requires TLS.
+3. Nothing flows into a case automatically. On SIFT, `evidence-fetch <path>` copies chosen files over the **S3 Gateway Endpoint** (no internet, no bastion, no NAT) into `/cases/store`, verifies the SHA-256, makes them read-only, and logs the S3 version id. SIFT's role reads any prefix and writes only `exports/` (reports/case exports back out).
+4. `evidence-add <file>` puts a fetched file into a Valhuntir case: a **hard link** into `/cases/vhir/<case>/evidence/` (same volume, so no second copy) and `vhir evidence register`. Upstream only registers files inside the case directory, and the Windows SMB share follows the active case, so this is also what makes the file visible to wintools. Valhuntir's case root (`VHIR_CASES_DIR`) is set to `/cases/vhir` at first boot.
 
 **Secondary path — scp through bastion:** fine for a few small files; `scp -o ProxyJump=bastion file sift:/cases/INC-XXXX/evidence/`. Not for large images (bastion disk + single-hop bottleneck).
 

@@ -41,6 +41,12 @@ variable "allowed_admin_cidrs" {
   default     = []
 }
 
+variable "evidence_upload_cidrs" {
+  description = "Public CIDRs allowed to upload (PutObject) evidence straight to the evidence bucket, e.g. your acquisition workstations. null = same as allowed_admin_cidrs; [] = uploads only from inside the VPC. Downloads are always VPC-only."
+  type        = list(string)
+  default     = null
+}
+
 variable "ssh_public_key" {
   description = "SSH public key material (contents of your .pub) used for the EC2 key pair. Leave empty to skip key-pair creation (SSM only)."
   type        = string

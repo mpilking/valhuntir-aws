@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# evidence-add [-c <case-id>] [-d <description>] <path>... — add fetched
+# evidence (files or folders under /cases/store) to a Valhuntir case.
+#
+# Each file is hard-linked into <case>/evidence/ (instant, no second copy, same
+# bytes) and registered with `vhir evidence register`. Folders keep their name
+# and every file in them is registered. Default case: the active case.
+set -euo pipefail
+. /etc/valhuntir/stack.env
+VHIR="$HOME/.vhir/venv/bin/vhir"
+CASES="${VHIR_CASES_DIR:-$VHIR_CASES_ROOT}"
+usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+
+CASE_ID=""; DESC=""
+while getopts c:d:h o; do
+  case $o in c) CASE_ID=$OPTARG;; d) DESC=$OPTARG;; *) usage;; esac
+done
+shift $((OPTIND - 1))
+[ $# -gt 0 ] || usage
+[ "$(id -u)" != 0 ] || { echo "run as $SIFT_USER, not root" >&2; exit 2; }
+
+if [ -z "$CASE_ID" ]; then
+  [ -s "$HOME/.vhir/active_case" ] || { echo "no active case: vhir case activate <id>, or pass -c <id>" >&2; exit 2; }
+  CASE_DIR=$(cat "$HOME/.vhir/active_case")
+  CASE_DIR="${CASE_DIR#"${CASE_DIR%%[![:space:]]*}"}"; CASE_DIR="${CASE_DIR%"${CASE_DIR##*[![:space:]]}"}"
+  case "$CASE_DIR" in /*) ;; *) CASE_DIR="$CASES/$CASE_DIR";; esac
+  CASE_ID=$(basename "$CASE_DIR")
+else
+  CASE_DIR="$CASES/$CASE_ID"
+fi
+[ -d "$CASE_DIR" ] || { echo "case not found: $CASE_DIR" >&2; exit 2; }
+EV="$CASE_DIR/evidence"; mkdir -p "$EV"
+STORE=$(realpath "$EVIDENCE_STORE")
+[ "$(stat -c %d "$STORE")" = "$(stat -c %d "$EV")" ] ||
+  { echo "case $CASE_ID is not on the /cases volume ($EV); cannot hard-link" >&2; exit 2; }
+echo "case: $CASE_ID ($CASE_DIR)"
+
+for src in "$@"; do
+  r=$(realpath -e "$src") || { echo "not found: $src" >&2; exit 1; }
+  case "$r" in "$STORE"/*) ;; *) echo "not in the evidence store ($STORE): $src — fetch it with evidence-fetch first" >&2; exit 1;; esac
+  dst="$EV/$(basename "$r")"
+  [ ! -e "$dst" ] || { echo "already in the case: $dst" >&2; exit 1; }
+  if [ -d "$r" ]; then cp -al "$r" "$dst"; else ln "$r" "$dst"; fi
+  while IFS= read -r -d '' f; do
+    rel="${f#"$EV"/}"; src_rel="${r#"$STORE"/}${rel#"$(basename "$r")"}"
+    "$VHIR" --case "$CASE_ID" evidence register "$f" --description "${DESC:-s3://$EVIDENCE_BUCKET/$src_rel}"
+  done < <(find "$dst" -type f -print0 | sort -z)
+done
+echo "Done. Review: vhir --case $CASE_ID evidence list   Lock: vhir --case $CASE_ID evidence lock"

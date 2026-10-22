@@ -25,9 +25,16 @@ locals {
     pins               = local.pins
     baked              = local.baked
     install_script_b64 = local.sift_install_b64
+    evidence_fetch_b64 = base64gzip(file("${path.module}/files/sift/evidence-fetch"))
+    evidence_add_b64   = base64gzip(file("${path.module}/files/sift/evidence-add"))
+    vhir_ready_b64     = base64gzip(file("${path.module}/files/sift/vhir-ready"))
   })
 
   key_name = var.ssh_public_key != "" ? aws_key_pair.main[0].key_name : null
+  # EC2 refuses ED25519 key pairs on Windows, and the key's only use there is
+  # decrypting the generated Administrator password (RSA). Without an RSA key
+  # Windows gets no key pair; it is managed via SSM.
+  windows_key_name = startswith(trimspace(var.ssh_public_key), "ssh-rsa ") ? local.key_name : null
 
   # Checkpoint deploys launch the baked AMI for each host; checkpoint="latest"
   # launches the base image and runs the shared install script at first boot.
@@ -278,9 +285,9 @@ resource "aws_instance" "windows" {
   subnet_id              = aws_subnet.private.id
   private_ip             = local.ip.windows
   vpc_security_group_ids = [aws_security_group.windows[0].id]
-  key_name               = local.key_name
+  key_name               = local.windows_key_name
   iam_instance_profile   = aws_iam_instance_profile.host["windows"].name
-  get_password_data      = var.ssh_public_key != ""
+  get_password_data      = local.windows_key_name != null
 
   # A changed first-boot script must run, and it only runs on a new instance.
   user_data_replace_on_change = true
