@@ -111,7 +111,14 @@ ssh -J ubuntu@$(terraform output -raw bastion_public_ip) sansforensics@$(terrafo
 
 RDP a client to `localhost:33389` to land on the SIFT desktop, or point the
 Examiner Portal / an LLM client at `https://localhost:4508` (the gateway serves TLS
-with a CA generated on each instance: `~/.vhir/tls/ca-cert.pem` on SIFT).
+with a CA generated on each instance: `~/.vhir/tls/ca-cert.pem` on SIFT). The
+Portal needs the gateway token in its URL: run `vhir portal` on SIFT and open
+the `…/portal/#token=…` URL it prints. SIFT's RDP login is `sansforensics`
+with `examiner_password` from `get_credentials_cmd`. Windows RDP
+(`localhost:13389`) is `Administrator`: with an RSA `ssh_public_key`, decrypt
+its EC2-generated password (`aws ec2 get-password-data --priv-launch-key`);
+with any other key type Windows gets no key pair, so set a password yourself
+over SSM Run Command.
 
 ## Evidence: store, fetch, add to a case
 
