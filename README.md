@@ -188,6 +188,11 @@ Known limitations:
   Defender blocks tools from reading flagged evidence over SMB and tries to
   delete it on SIFT (tested with EICAR). Evidence copied to local Windows
   folders is still scanned.
+- Windows first boot stores the case share's `vhir-smb` credential for
+  `Administrator` (`cmdkey`), so S: reconnects at each logon instead of showing
+  disconnected and prompting; added 2026-10-23, not yet tested on a deploy. Other
+  accounts map the share with `vhir-smb` and the `smb_password` in
+  `C:\Tools\vhir\wintools-mcp\config.yaml`.
 - The Windows host finishes first boot ~3 minutes after SIFT publishes its join
   code; the gateway shows `wintools-mcp` ~2 minutes after that.
 - REMnux at the July pins: 12 salt states fail because Malcat Lite and
